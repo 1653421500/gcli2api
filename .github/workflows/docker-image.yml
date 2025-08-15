@@ -1,0 +1,41 @@
+name: Build and Push Docker Image to GHCR
+
+on:
+  push:
+    branches: [ master ]  # 当 master 分支有提交时触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read        # 读取仓库内容
+      packages: write       # 推送镜像需要写权限
+
+    steps:
+      # 1. 拉取仓库代码
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. 登录 GHCR
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. 获取当前提交短哈希
+      - name: Set image tag
+        id: vars
+        run: echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      # 4. 构建并推送 Docker 镜像
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/gcli2api:latest
+            ghcr.io/${{ github.repository_owner }}/gcli2api:${{ env.COMMIT_HASH }}
