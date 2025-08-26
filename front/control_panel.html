@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Google OAuth 认证管理</title>
+    <title>GCLI2API 控制面板</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -234,10 +234,6 @@
             border-color: #ccc;
             opacity: 0.7;
         }
-        .cred-card.cd {
-            background-color: #fff3cd;
-            border-color: #ffeaa7;
-        }
         .cred-header {
             display: flex;
             justify-content: space-between;
@@ -265,10 +261,6 @@
         }
         .status-badge.disabled {
             background-color: #6c757d;
-        }
-        .status-badge.cd {
-            background-color: #ffc107;
-            color: #212529;
         }
         .error-codes {
             background-color: #f8d7da;
@@ -366,7 +358,6 @@
         }
         .stat-item.total { border-left: 4px solid #007bff; }
         .stat-item.normal { border-left: 4px solid #28a745; }
-        .stat-item.cd { border-left: 4px solid #ffc107; }
         .stat-item.disabled { border-left: 4px solid #6c757d; }
         
         .filter-container {
@@ -445,6 +436,97 @@
             cursor: pointer;
         }
         
+        /* 批量操作样式 */
+        .batch-controls {
+            background-color: #f8f9fa;
+            border: 1px solid #e1e4e8;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            margin-right: 15px;
+        }
+        .batch-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-top: 10px;
+        }
+        .batch-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .batch-btn.batch-enable {
+            background-color: #28a745;
+            color: white;
+        }
+        .batch-btn.batch-disable {
+            background-color: #6c757d;
+            color: white;
+        }
+        .batch-btn.batch-delete {
+            background-color: #dc3545;
+            color: white;
+        }
+        .batch-btn.batch-email {
+            background-color: #17a2b8;
+            color: white;
+        }
+        .batch-btn:disabled {
+            background-color: #e9ecef;
+            color: #6c757d;
+            cursor: not-allowed;
+        }
+        .cred-btn.email {
+            background-color: #17a2b8;
+            color: white;
+        }
+        .cred-btn.email:hover {
+            background-color: #138496;
+        }
+        .selected-count {
+            font-weight: bold;
+            color: #007bff;
+            margin-right: 10px;
+        }
+        .select-all-checkbox {
+            margin-right: 8px;
+            transform: scale(1.2);
+        }
+        
+        /* 错误码筛选增强 */
+        .error-filter-container {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .error-code-badge {
+            display: inline-block;
+            background-color: #dc3545;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin: 1px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .error-code-badge:hover {
+            background-color: #c82333;
+        }
+        .error-code-badge.selected {
+            background-color: #007bff;
+        }
+        
         /* 配置管理样式 */
         .config-group {
             background-color: #f8f9fa;
@@ -489,6 +571,25 @@
             margin-bottom: 10px;
             font-style: italic;
         }
+
+        .config-info {
+            background-color: #e3f2fd;
+            border: 1px solid #1976d2;
+            border-radius: 4px;
+            padding: 12px;
+            margin-top: 8px;
+            font-size: 13px;
+            color: #1565c0;
+        }
+
+        .config-info ul {
+            margin: 8px 0 4px 0;
+            color: #424242;
+        }
+
+        .config-info li {
+            margin: 3px 0;
+        }
         .env-locked {
             position: relative;
         }
@@ -513,7 +614,7 @@
         <div id="loginSection" class="login-form">
             <h1>Google OAuth 认证管理</h1>
             <p>请输入访问密码：</p>
-            <input type="password" id="password" placeholder="输入密码" onkeypress="handlePasswordEnter(event)" />
+            <input type="password" id="loginPassword" placeholder="输入密码" onkeypress="handlePasswordEnter(event)" />
             <br>
             <button class="btn" onclick="login()">登录</button>
         </div>
@@ -526,8 +627,10 @@
             <div class="tabs">
                 <button class="tab active" onclick="switchTab('oauth')">OAuth认证</button>
                 <button class="tab" onclick="switchTab('upload')">批量上传</button>
+                <button class="tab" onclick="switchTab('envload')">环境变量</button>
                 <button class="tab" onclick="switchTab('manage')">文件管理</button>
                 <button class="tab" onclick="switchTab('config')">配置管理</button>
+                <button class="tab" onclick="switchTab('logs')">实时日志</button>
             </div>
 
             <!-- OAuth认证标签页 -->
@@ -606,6 +709,75 @@
                 </div>
             </div>
 
+            <!-- 环境变量标签页 -->
+            <div id="envloadTab" class="tab-content">
+                <h3>环境变量凭证导入</h3>
+                <p>从环境变量批量导入认证文件，支持部署自动化场景</p>
+                
+                <!-- 环境变量状态信息 -->
+                <div id="envStatusSection">
+                    <div class="loading" id="envStatusLoading">正在检查环境变量状态...</div>
+                    <div id="envStatusContent" class="hidden">
+                        <div class="config-group">
+                            <h4>环境变量状态</h4>
+                            
+                            <div class="form-group">
+                                <label>可用的环境变量:</label>
+                                <div id="envVarsList" class="cred-content"></div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>自动加载设置:</label>
+                                <span id="autoLoadStatus" style="font-weight: bold;"></span>
+                                <small class="config-note">
+                                    要启用自动加载，请设置环境变量 AUTO_LOAD_ENV_CREDS=true
+                                </small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>已导入的环境变量文件:</label>
+                                <span id="envFilesCount" style="font-weight: bold;"></span>
+                                <div id="envFilesList" class="config-note"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 操作按钮 -->
+                <div class="manage-actions">
+                    <button class="btn" onclick="checkEnvCredsStatus()">刷新状态</button>
+                    <button class="btn" onclick="loadEnvCredentials()">从环境变量导入</button>
+                    <button class="btn" style="background-color: #dc3545;" onclick="clearEnvCredentials()">清除环境变量文件</button>
+                </div>
+                
+                <!-- 使用说明 -->
+                <div class="config-group">
+                    <h4>使用说明</h4>
+                    <div class="config-info">
+                        <strong>环境变量格式：</strong>
+                        <ul>
+                            <li><code>GCLI_CREDS_1</code>, <code>GCLI_CREDS_2</code>, ... (编号格式)</li>
+                            <li><code>GCLI_CREDS_项目名1</code>, <code>GCLI_CREDS_项目名2</code>, ... (项目名格式)</li>
+                        </ul>
+                        
+                        <strong>环境变量值：</strong> 完整的认证文件JSON内容
+                        
+                        <br><br>
+                        <strong>示例：</strong>
+                        <pre style="background: #f8f9fa; padding: 10px; border-radius: 4px; font-size: 11px;">
+export GCLI_CREDS_1='{"client_id":"your-client-id","client_secret":"your-secret","refresh_token":"your-token","token_uri":"https://oauth2.googleapis.com/token","project_id":"your-project"}'
+export GCLI_CREDS_myproject='{"client_id":"...","project_id":"myproject",...}'
+export AUTO_LOAD_ENV_CREDS=true  # 启用程序启动时自动导入</pre>
+                        
+                        <strong>Docker部署示例：</strong>
+                        <pre style="background: #f8f9fa; padding: 10px; border-radius: 4px; font-size: 11px;">
+docker run -e GCLI_CREDS_1='{"client_id":"..."}' \
+           -e AUTO_LOAD_ENV_CREDS=true \
+           your-image</pre>
+                    </div>
+                </div>
+            </div>
+
             <!-- 文件管理标签页 -->
             <div id="manageTab" class="tab-content">
                 <h3>凭证文件管理</h3>
@@ -621,10 +793,6 @@
                         <span class="stat-number" id="statNormal">0</span>
                         <span class="stat-label">正常</span>
                     </div>
-                    <div class="stat-item cd">
-                        <span class="stat-number" id="statCd">0</span>
-                        <span class="stat-label">CD中</span>
-                    </div>
                     <div class="stat-item disabled">
                         <span class="stat-number" id="statDisabled">0</span>
                         <span class="stat-label">禁用</span>
@@ -636,14 +804,42 @@
                     <button class="download-all-btn" onclick="downloadAllCreds()">打包下载所有文件</button>
                 </div>
                 
+                <!-- 批量操作控件 -->
+                <div class="batch-controls">
+                    <h4 style="margin-top: 0; margin-bottom: 10px;">批量操作</h4>
+                    <div class="batch-actions">
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="selectAllCheckbox" class="select-all-checkbox" onchange="toggleSelectAll()">
+                            <label for="selectAllCheckbox">全选</label>
+                        </div>
+                        <span class="selected-count" id="selectedCount">已选择 0 项</span>
+                        <button class="batch-btn batch-enable" id="batchEnableBtn" onclick="batchAction('enable')" disabled>批量启用</button>
+                        <button class="batch-btn batch-disable" id="batchDisableBtn" onclick="batchAction('disable')" disabled>批量禁用</button>
+                        <button class="batch-btn batch-delete" id="batchDeleteBtn" onclick="batchAction('delete')" disabled>批量删除</button>
+                        <button class="batch-btn batch-email" onclick="refreshAllEmails()">刷新所有邮箱</button>
+                    </div>
+                </div>
+
                 <!-- 筛选和分页控件 -->
                 <div class="filter-container">
                     <label for="statusFilter">状态筛选：</label>
                     <select id="statusFilter" class="filter-select" onchange="applyFilters()">
                         <option value="all">全部</option>
                         <option value="normal">正常</option>
-                        <option value="cd">CD中</option>
                         <option value="disabled">禁用</option>
+                    </select>
+                    
+                    <label for="errorCodeFilter">错误码筛选：</label>
+                    <select id="errorCodeFilter" class="filter-select" onchange="applyFilters()">
+                        <option value="all">全部错误码</option>
+                        <option value="no-errors">无错误</option>
+                        <option value="has-errors">有错误</option>
+                        <option value="400">错误码 400</option>
+                        <option value="401">错误码 401</option>
+                        <option value="403">错误码 403</option>
+                        <option value="404">错误码 404</option>
+                        <option value="429">错误码 429</option>
+                        <option value="500">错误码 500</option>
                     </select>
                     
                     <label for="pageSizeSelect">每页显示：</label>
@@ -652,6 +848,11 @@
                         <option value="50">50</option>
                         <option value="100">100</option>
                     </select>
+                    
+                    <div class="error-filter-container" id="errorFilterContainer">
+                        <span>快速筛选错误码：</span>
+                        <div id="errorCodeBadges"></div>
+                    </div>
                 </div>
                 
                 <div id="credsListSection">
@@ -680,6 +881,28 @@
                 <div id="configSection">
                     <div class="loading" id="configLoading">正在加载配置...</div>
                     <div id="configForm" class="hidden">
+                        <div class="config-group">
+                            <h4>服务器配置</h4>
+                            
+                            <div class="form-group">
+                                <label for="host">服务器主机地址:</label>
+                                <input type="text" id="host" class="config-input" placeholder="例如: 0.0.0.0, 127.0.0.1" />
+                                <small class="config-note">服务器监听的主机地址，0.0.0.0表示监听所有接口</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="port">服务器端口:</label>
+                                <input type="number" id="port" class="config-input" min="1" max="65535" placeholder="7861" />
+                                <small class="config-note">服务器监听的端口号，修改后需要重启服务器</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="configPassword">访问密码:</label>
+                                <input type="text" id="configPassword" class="config-input" placeholder="pwd" />
+                                <small class="config-note">API访问密码，用于认证和权限控制</small>
+                            </div>
+                        </div>
+                        
                         <div class="config-group">
                             <h4>基础配置</h4>
                             
@@ -741,7 +964,110 @@
                                 <small class="config-note">HTTP连接池最大连接数</small>
                             </div>
                         </div>
+                        
+                        <div class="config-group">
+                            <h4>429重试配置</h4>
+                            
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="retry429Enabled" class="config-checkbox" />
+                                    启用429重试
+                                </label>
+                                <small class="config-note">遇到429错误时自动重试</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="retry429MaxRetries">429重试次数:</label>
+                                <input type="number" id="retry429MaxRetries" class="config-input" min="1" max="50" />
+                                <small class="config-note">遇到429错误时的最大重试次数</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="retry429Interval">429重试间隔(秒):</label>
+                                <input type="number" id="retry429Interval" class="config-input" min="0.01" max="10" step="0.01" />
+                                <small class="config-note">遇到429错误时每两次重试间的等待时间</small>
+                            </div>
+                        </div>
+                        
+                        <div class="config-group">
+                            <h4>日志配置</h4>
+                            
+                            <div class="form-group">
+                                <label for="logLevel">日志级别:</label>
+                                <select id="logLevel" class="config-input">
+                                    <option value="debug">Debug (调试)</option>
+                                    <option value="info">Info (信息)</option>
+                                    <option value="warning">Warning (警告)</option>
+                                    <option value="error">Error (错误)</option>
+                                    <option value="critical">Critical (严重)</option>
+                                </select>
+                                <small class="config-note">设置日志输出级别，级别越低记录的信息越详细</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="logFile">日志文件路径:</label>
+                                <input type="text" id="logFile" class="config-input" placeholder="例如: log.txt" />
+                                <small class="config-note">日志文件的保存路径，相对于程序运行目录</small>
+                            </div>
+                        </div>
+                        
+                        <div class="config-group">
+                            <h4>抗截断配置</h4>
+                            
+                            <div class="form-group">
+                                <label for="antiTruncationMaxAttempts">抗截断最大重试次数:</label>
+                                <input type="number" id="antiTruncationMaxAttempts" class="config-input" min="1" max="10" />
+                                <small class="config-note">当检测到输出截断时的最大续传尝试次数</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <div class="config-info">
+                                    <strong>注意：</strong>抗截断功能现在通过模型名控制：
+                                    <ul style="margin: 5px 0; padding-left: 20px;">
+                                        <li>选择带有 "-流式抗截断" 后缀的模型即可启用</li>
+                                        <li>该功能仅在流式传输时生效</li>
+                                        <li>例如: "gemini-2.5-pro-流式抗截断"</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- 实时日志标签页 -->
+            <div id="logsTab" class="tab-content">
+                <h3>实时日志</h3>
+                <p>查看系统实时日志输出，支持日志筛选和自动滚动</p>
+                
+                <div class="manage-actions">
+                    <button class="refresh-btn" onclick="connectWebSocket()">连接日志流</button>
+                    <button class="btn" style="background-color: #dc3545;" onclick="disconnectWebSocket()">断开连接</button>
+                    <button class="btn" style="background-color: #28a745;" onclick="downloadLogs()">下载日志</button>
+                    <button class="btn" style="background-color: #6c757d;" onclick="clearLogs()">清空日志</button>
+                </div>
+                
+                <div class="filter-container">
+                    <label for="logLevelFilter">日志级别筛选：</label>
+                    <select id="logLevelFilter" class="filter-select" onchange="filterLogs()">
+                        <option value="all">全部</option>
+                        <option value="ERROR">错误</option>
+                        <option value="WARNING">警告</option>
+                        <option value="INFO">信息</option>
+                        <option value="DEBUG">调试</option>
+                    </select>
+                    
+                    <label>
+                        <input type="checkbox" id="autoScroll" checked> 自动滚动到底部
+                    </label>
+                </div>
+                
+                <div id="logConnectionStatus" class="status info">
+                    <strong>连接状态：</strong> <span id="connectionStatusText">未连接</span>
+                </div>
+                
+                <div id="logContainer" style="background-color: #1e1e1e; color: #ffffff; font-family: 'Courier New', monospace; font-size: 12px; height: 600px; overflow-y: auto; border: 1px solid #333; border-radius: 5px; padding: 15px; white-space: pre-wrap; word-break: break-all;">
+                    <div id="logContent">等待连接日志流...</div>
                 </div>
             </div>
 
@@ -752,7 +1078,7 @@
     <script>
         let currentProjectId = '';
         let authInProgress = false;
-        let selectedFiles = [];
+        let uploadSelectedFiles = []; // 上传页面用的文件列表
         let authToken = '';
         let credsData = {};
         
@@ -761,10 +1087,12 @@
         let currentPage = 1;
         let pageSize = 20;
         let currentFilter = 'all';
+        let currentErrorCodeFilter = 'all';
+        let selectedCredFiles = new Set(); // 选中的凭证文件名集合
+        let availableErrorCodes = new Set(); // 所有可用的错误码
         let statsData = {
             total: 0,
             normal: 0,
-            cd: 0,
             disabled: 0
         };
 
@@ -782,7 +1110,7 @@
         // 登录相关函数
         async function login() {
             console.log('Login function called');
-            const password = document.getElementById('password').value;
+            const password = document.getElementById('loginPassword').value;
             console.log('Password length:', password ? password.length : 0);
             
             if (!password) {
@@ -843,6 +1171,14 @@
             // 如果切换到配置管理页面，自动加载配置
             if (tabName === 'config') {
                 loadConfig();
+            }
+            // 如果切换到环境变量页面，自动检查状态
+            if (tabName === 'envload') {
+                checkEnvCredsStatus();
+            }
+            // 如果切换到日志页面，自动连接WebSocket
+            if (tabName === 'logs') {
+                connectWebSocket();
             }
         }
 
@@ -999,8 +1335,8 @@
         function addFiles(files) {
             files.forEach(file => {
                 if (file.type === 'application/json' || file.name.endsWith('.json')) {
-                    if (!selectedFiles.find(f => f.name === file.name && f.size === file.size)) {
-                        selectedFiles.push(file);
+                    if (!uploadSelectedFiles.find(f => f.name === file.name && f.size === file.size)) {
+                        uploadSelectedFiles.push(file);
                     }
                 } else {
                     showStatus(`文件 ${file.name} 不是有效的JSON文件`, 'error');
@@ -1014,7 +1350,7 @@
             const fileList = document.getElementById('fileList');
             const fileListSection = document.getElementById('fileListSection');
             
-            if (selectedFiles.length === 0) {
+            if (uploadSelectedFiles.length === 0) {
                 fileListSection.classList.add('hidden');
                 return;
             }
@@ -1022,7 +1358,7 @@
             fileListSection.classList.remove('hidden');
             fileList.innerHTML = '';
             
-            selectedFiles.forEach((file, index) => {
+            uploadSelectedFiles.forEach((file, index) => {
                 const fileItem = document.createElement('div');
                 fileItem.className = 'file-item';
                 fileItem.innerHTML = `
@@ -1037,12 +1373,12 @@
         }
 
         function removeFile(index) {
-            selectedFiles.splice(index, 1);
+            uploadSelectedFiles.splice(index, 1);
             updateFileList();
         }
 
         function clearFiles() {
-            selectedFiles = [];
+            uploadSelectedFiles = [];
             updateFileList();
         }
 
@@ -1053,7 +1389,7 @@
         }
 
         async function uploadFiles() {
-            if (selectedFiles.length === 0) {
+            if (uploadSelectedFiles.length === 0) {
                 showStatus('请选择要上传的文件', 'error');
                 return;
             }
@@ -1065,7 +1401,7 @@
             progressSection.classList.remove('hidden');
             
             const formData = new FormData();
-            selectedFiles.forEach(file => {
+            uploadSelectedFiles.forEach(file => {
                 formData.append('files', file);
             });
 
@@ -1126,6 +1462,186 @@
             addFiles(files);
         });
 
+        // WebSocket日志相关变量和函数
+        let logWebSocket = null;
+        let allLogs = [];
+        let filteredLogs = [];
+        let currentLogFilter = 'all';
+
+        function connectWebSocket() {
+            if (logWebSocket && logWebSocket.readyState === WebSocket.OPEN) {
+                showStatus('WebSocket已经连接', 'info');
+                return;
+            }
+
+            try {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/auth/logs/stream`;
+                
+                document.getElementById('connectionStatusText').textContent = '连接中...';
+                document.getElementById('logConnectionStatus').className = 'status info';
+                
+                logWebSocket = new WebSocket(wsUrl);
+                
+                logWebSocket.onopen = function(event) {
+                    document.getElementById('connectionStatusText').textContent = '已连接';
+                    document.getElementById('logConnectionStatus').className = 'status success';
+                    showStatus('日志流连接成功', 'success');
+                    clearLogsDisplay(); // 只清空前端显示的旧日志，不清空服务器文件
+                };
+                
+                logWebSocket.onmessage = function(event) {
+                    const logLine = event.data;
+                    if (logLine.trim()) {
+                        allLogs.push(logLine);
+                        
+                        // 限制日志数量，保留最后1000条
+                        if (allLogs.length > 1000) {
+                            allLogs = allLogs.slice(-1000);
+                        }
+                        
+                        filterLogs();
+                        
+                        // 自动滚动到底部
+                        if (document.getElementById('autoScroll').checked) {
+                            const logContainer = document.getElementById('logContainer');
+                            logContainer.scrollTop = logContainer.scrollHeight;
+                        }
+                    }
+                };
+                
+                logWebSocket.onclose = function(event) {
+                    document.getElementById('connectionStatusText').textContent = '连接断开';
+                    document.getElementById('logConnectionStatus').className = 'status error';
+                    showStatus('日志流连接断开', 'info');
+                };
+                
+                logWebSocket.onerror = function(error) {
+                    document.getElementById('connectionStatusText').textContent = '连接错误';
+                    document.getElementById('logConnectionStatus').className = 'status error';
+                    showStatus('日志流连接错误: ' + error, 'error');
+                };
+                
+            } catch (error) {
+                showStatus('创建WebSocket连接失败: ' + error.message, 'error');
+                document.getElementById('connectionStatusText').textContent = '连接失败';
+                document.getElementById('logConnectionStatus').className = 'status error';
+            }
+        }
+
+        function disconnectWebSocket() {
+            if (logWebSocket) {
+                logWebSocket.close();
+                logWebSocket = null;
+                document.getElementById('connectionStatusText').textContent = '未连接';
+                document.getElementById('logConnectionStatus').className = 'status info';
+                showStatus('日志流连接已断开', 'info');
+            }
+        }
+
+        function clearLogsDisplay() {
+            // 只清空前端显示的日志，不清空服务器文件
+            allLogs = [];
+            filteredLogs = [];
+            document.getElementById('logContent').textContent = '日志已清空，等待新日志...';
+        }
+
+        async function downloadLogs() {
+            try {
+                // 调用后端API下载日志文件
+                const response = await fetch('/auth/logs/download', {
+                    method: 'GET',
+                    headers: getAuthHeaders()
+                });
+                
+                if (response.ok) {
+                    // 获取文件名
+                    const contentDisposition = response.headers.get('Content-Disposition');
+                    let filename = 'gcli2api_logs.txt';
+                    if (contentDisposition) {
+                        const filenameMatch = contentDisposition.match(/filename=(.+)/);
+                        if (filenameMatch) {
+                            filename = filenameMatch[1];
+                        }
+                    }
+                    
+                    // 下载文件
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    showStatus(`日志文件下载成功: ${filename}`, 'success');
+                } else {
+                    const errorText = await response.text();
+                    let errorMsg = '下载失败';
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        errorMsg = errorData.detail || errorData.error || '未知错误';
+                    } catch (e) {
+                        errorMsg = errorText || '未知错误';
+                    }
+                    showStatus(`下载日志失败: ${errorMsg}`, 'error');
+                }
+            } catch (error) {
+                console.error('downloadLogs error:', error);
+                showStatus(`下载日志时网络错误: ${error.message}`, 'error');
+            }
+        }
+
+        async function clearLogs() {
+            try {
+                // 调用后端API清空日志文件
+                const response = await fetch('/auth/logs/clear', {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // 清空前端显示的日志
+                    clearLogsDisplay();
+                    showStatus(data.message, 'success');
+                } else {
+                    showStatus(`清空日志失败: ${data.detail || data.error || '未知错误'}`, 'error');
+                }
+            } catch (error) {
+                console.error('clearLogs error:', error);
+                // 即使后端清空失败，也清空前端显示
+                clearLogsDisplay();
+                showStatus(`清空日志时网络错误: ${error.message}`, 'error');
+            }
+        }
+
+        function filterLogs() {
+            const filter = document.getElementById('logLevelFilter').value;
+            currentLogFilter = filter;
+            
+            if (filter === 'all') {
+                filteredLogs = [...allLogs];
+            } else {
+                filteredLogs = allLogs.filter(log => log.toUpperCase().includes(filter));
+            }
+            
+            displayLogs();
+        }
+
+        function displayLogs() {
+            const logContent = document.getElementById('logContent');
+            if (filteredLogs.length === 0) {
+                logContent.textContent = currentLogFilter === 'all' ? 
+                    '暂无日志...' : `暂无${currentLogFilter}级别的日志...`;
+            } else {
+                logContent.textContent = filteredLogs.join('\n');
+            }
+        }
+
         // 凭证文件管理相关函数
         async function refreshCredsStatus() {
             const credsLoading = document.getElementById('credsLoading');
@@ -1177,52 +1693,113 @@
             statsData = {
                 total: 0,
                 normal: 0,
-                cd: 0,
                 disabled: 0
             };
+            
+            // 清空并重新收集错误码
+            availableErrorCodes.clear();
             
             for (const [fullPath, credInfo] of Object.entries(credsData)) {
                 statsData.total++;
                 
                 if (credInfo.status.disabled) {
                     statsData.disabled++;
-                } else if (credInfo.status.in_cd) {
-                    statsData.cd++;
                 } else {
                     statsData.normal++;
                 }
+                
+                // 收集错误码信息
+                if (credInfo.status.error_codes && credInfo.status.error_codes.length > 0) {
+                    credInfo.status.error_codes.forEach(code => {
+                        availableErrorCodes.add(code);
+                    });
+                }
             }
+            
+            // 更新错误码快速筛选按钮
+            updateErrorCodeBadges();
+        }
+        
+        // 更新错误码筛选快速按钮
+        function updateErrorCodeBadges() {
+            const errorCodeBadges = document.getElementById('errorCodeBadges');
+            errorCodeBadges.innerHTML = '';
+            
+            if (availableErrorCodes.size === 0) {
+                errorCodeBadges.innerHTML = '<span style="color: #28a745;">所有文件都无错误</span>';
+                return;
+            }
+            
+            const sortedCodes = Array.from(availableErrorCodes).sort((a, b) => a - b);
+            sortedCodes.forEach(code => {
+                const badge = document.createElement('span');
+                badge.className = 'error-code-badge';
+                badge.textContent = code;
+                badge.onclick = () => filterByErrorCode(code);
+                errorCodeBadges.appendChild(badge);
+            });
+        }
+        
+        // 按错误码快速筛选
+        function filterByErrorCode(code) {
+            document.getElementById('errorCodeFilter').value = code.toString();
+            applyFilters();
         }
         
         // 更新统计显示
         function updateStatsDisplay() {
             document.getElementById('statTotal').textContent = statsData.total;
             document.getElementById('statNormal').textContent = statsData.normal;
-            document.getElementById('statCd').textContent = statsData.cd;
             document.getElementById('statDisabled').textContent = statsData.disabled;
         }
         
         // 应用筛选
         function applyFilters() {
             const statusFilter = document.getElementById('statusFilter').value;
+            const errorCodeFilter = document.getElementById('errorCodeFilter').value;
             currentFilter = statusFilter;
+            currentErrorCodeFilter = errorCodeFilter;
             filteredCredsData = {};
             
             for (const [fullPath, credInfo] of Object.entries(credsData)) {
                 let shouldInclude = false;
                 
+                // 状态筛选
                 switch (statusFilter) {
                     case 'all':
                         shouldInclude = true;
                         break;
                     case 'normal':
-                        shouldInclude = !credInfo.status.disabled && !credInfo.status.in_cd;
-                        break;
-                    case 'cd':
-                        shouldInclude = credInfo.status.in_cd;
+                        shouldInclude = !credInfo.status.disabled;
                         break;
                     case 'disabled':
                         shouldInclude = credInfo.status.disabled;
+                        break;
+                }
+                
+                // 如果状态筛选已经排除，跳过错误码筛选
+                if (!shouldInclude) {
+                    continue;
+                }
+                
+                // 错误码筛选
+                const errorCodes = credInfo.status.error_codes || [];
+                switch (errorCodeFilter) {
+                    case 'all':
+                        // 保持当前状态
+                        break;
+                    case 'no-errors':
+                        shouldInclude = errorCodes.length === 0;
+                        break;
+                    case 'has-errors':
+                        shouldInclude = errorCodes.length > 0;
+                        break;
+                    default:
+                        // 具体错误码筛选
+                        const targetCode = parseInt(errorCodeFilter);
+                        if (!isNaN(targetCode)) {
+                            shouldInclude = errorCodes.includes(targetCode);
+                        }
                         break;
                 }
                 
@@ -1230,6 +1807,10 @@
                     filteredCredsData[fullPath] = credInfo;
                 }
             }
+            
+            // 清空选择状态
+            selectedCredFiles.clear();
+            updateBatchControls();
             
             currentPage = 1;
             renderCredsList();
@@ -1270,6 +1851,9 @@
             }
             
             document.getElementById('paginationContainer').style.display = getTotalPages() > 1 ? 'flex' : 'none';
+            
+            // 更新批量控件状态
+            updateBatchControls();
         }
         
         // 更新分页信息
@@ -1319,7 +1903,6 @@
             // 设置卡片状态样式
             let cardClass = 'cred-card';
             if (status.disabled) cardClass += ' disabled';
-            if (status.in_cd) cardClass += ' cd';
             
             div.className = cardClass;
             
@@ -1331,9 +1914,6 @@
                 statusBadges += '<span class="status-badge enabled">已启用</span>';
             }
             
-            if (status.in_cd) {
-                statusBadges += '<span class="status-badge cd">CD中</span>';
-            }
             
             // 调试：记录 error_codes
             console.log(`Error codes for ${filename}:`, status.error_codes);
@@ -1364,12 +1944,27 @@
             actionButtons += `
                 <button class="cred-btn view" onclick="toggleCredDetails('${pathId}')">查看内容</button>
                 <button class="cred-btn download" onclick="downloadCred('${filename}')">下载</button>
+                <button class="cred-btn email" onclick="fetchUserEmail('${filename}')">获取邮箱</button>
                 <button class="cred-btn delete" data-filename="${filename}" data-action="delete">删除</button>
             `;
             
+            // 构建邮箱显示
+            let emailInfo = '';
+            if (credInfo.user_email) {
+                emailInfo = `<div class="cred-email" style="font-size: 12px; color: #666; margin-top: 2px;">${credInfo.user_email}</div>`;
+            } else {
+                emailInfo = `<div class="cred-email" style="font-size: 12px; color: #999; margin-top: 2px; font-style: italic;">未获取邮箱</div>`;
+            }
+            
             div.innerHTML = `
                 <div class="cred-header">
-                    <div class="cred-filename">${filename}</div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" class="file-checkbox" data-filename="${filename}" onchange="toggleFileSelection('${filename}')">
+                        <div>
+                            <div class="cred-filename">${filename}</div>
+                            ${emailInfo}
+                        </div>
+                    </div>
                     <div class="cred-status">${statusBadges}</div>
                 </div>
                 <div class="cred-actions">${actionButtons}</div>
@@ -1555,6 +2150,11 @@
         }
 
         function populateConfigForm() {
+            // 服务器配置
+            setConfigField('host', currentConfig.host || '0.0.0.0');
+            setConfigField('port', currentConfig.port || 7861);
+            setConfigField('configPassword', currentConfig.password || 'pwd');
+            
             // 基础配置
             setConfigField('codeAssistEndpoint', currentConfig.code_assist_endpoint || '');
             setConfigField('credentialsDir', currentConfig.credentials_dir || '');
@@ -1568,6 +2168,18 @@
             setConfigField('callsPerRotation', currentConfig.calls_per_rotation || 10);
             setConfigField('httpTimeout', currentConfig.http_timeout || 30);
             setConfigField('maxConnections', currentConfig.max_connections || 100);
+            
+            // 429重试配置
+            document.getElementById('retry429Enabled').checked = currentConfig.retry_429_enabled || false;
+            setConfigField('retry429MaxRetries', currentConfig.retry_429_max_retries || 20);
+            setConfigField('retry429Interval', currentConfig.retry_429_interval || 0.1);
+            
+            // 日志配置
+            setConfigField('logLevel', currentConfig.log_level || 'info');
+            setConfigField('logFile', currentConfig.log_file || 'log.txt');
+            
+            // 抗截断配置
+            setConfigField('antiTruncationMaxAttempts', currentConfig.anti_truncation_max_attempts || 3);
         }
 
         function setConfigField(fieldId, value) {
@@ -1589,7 +2201,15 @@
 
         async function saveConfig() {
             try {
+                // 调试：检查password字段的实际值
+                const passwordElement = document.getElementById('configPassword');
+                console.log('DEBUG: configPassword元素:', passwordElement);
+                console.log('DEBUG: configPassword值:', passwordElement ? passwordElement.value : 'ELEMENT_NOT_FOUND');
+                
                 const config = {
+                    host: document.getElementById('host').value.trim(),
+                    port: parseInt(document.getElementById('port').value) || 7861,
+                    password: document.getElementById('configPassword').value.trim(),
                     code_assist_endpoint: document.getElementById('codeAssistEndpoint').value.trim(),
                     credentials_dir: document.getElementById('credentialsDir').value.trim(),
                     proxy: document.getElementById('proxy').value.trim(),
@@ -1600,7 +2220,15 @@
                         .filter(code => !isNaN(code)),
                     calls_per_rotation: parseInt(document.getElementById('callsPerRotation').value) || 10,
                     http_timeout: parseInt(document.getElementById('httpTimeout').value) || 30,
-                    max_connections: parseInt(document.getElementById('maxConnections').value) || 100
+                    max_connections: parseInt(document.getElementById('maxConnections').value) || 100,
+                    retry_429_enabled: document.getElementById('retry429Enabled').checked,
+                    retry_429_max_retries: parseInt(document.getElementById('retry429MaxRetries').value) || 20,
+                    retry_429_interval: parseFloat(document.getElementById('retry429Interval').value) || 0.1,
+                    // 日志配置
+                    log_level: document.getElementById('logLevel').value || 'info',
+                    log_file: document.getElementById('logFile').value.trim() || 'log.txt',
+                    // 抗截断配置
+                    anti_truncation_max_attempts: parseInt(document.getElementById('antiTruncationMaxAttempts').value) || 3
                 };
 
                 const response = await fetch('/config/save', {
@@ -1621,6 +2249,304 @@
             } catch (error) {
                 console.error('saveConfig error:', error);
                 showStatus(`网络错误: ${error.message}`, 'error');
+            }
+        }
+
+        // 环境变量凭证管理相关函数
+        async function checkEnvCredsStatus() {
+            const envStatusLoading = document.getElementById('envStatusLoading');
+            const envStatusContent = document.getElementById('envStatusContent');
+            
+            try {
+                envStatusLoading.style.display = 'block';
+                envStatusContent.classList.add('hidden');
+                
+                const response = await fetch('/auth/env-creds-status', {
+                    method: 'GET',
+                    headers: getAuthHeaders()
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // 更新环境变量列表
+                    const envVarsList = document.getElementById('envVarsList');
+                    if (Object.keys(data.available_env_vars).length > 0) {
+                        envVarsList.textContent = Object.keys(data.available_env_vars).join(', ');
+                    } else {
+                        envVarsList.textContent = '未找到GCLI_CREDS_*环境变量';
+                    }
+                    
+                    // 更新自动加载状态
+                    const autoLoadStatus = document.getElementById('autoLoadStatus');
+                    autoLoadStatus.textContent = data.auto_load_enabled ? '✅ 已启用' : '❌ 未启用';
+                    autoLoadStatus.style.color = data.auto_load_enabled ? '#28a745' : '#dc3545';
+                    
+                    // 更新已导入文件统计
+                    const envFilesCount = document.getElementById('envFilesCount');
+                    envFilesCount.textContent = `${data.existing_env_files_count} 个文件`;
+                    
+                    const envFilesList = document.getElementById('envFilesList');
+                    if (data.existing_env_files.length > 0) {
+                        envFilesList.textContent = data.existing_env_files.join(', ');
+                    } else {
+                        envFilesList.textContent = '无';
+                    }
+                    
+                    envStatusContent.classList.remove('hidden');
+                    showStatus('环境变量状态检查完成', 'success');
+                } else {
+                    showStatus(`获取环境变量状态失败: ${data.detail || data.error || '未知错误'}`, 'error');
+                }
+            } catch (error) {
+                console.error('checkEnvCredsStatus error:', error);
+                showStatus(`网络错误: ${error.message}`, 'error');
+            } finally {
+                envStatusLoading.style.display = 'none';
+            }
+        }
+
+        async function loadEnvCredentials() {
+            try {
+                showStatus('正在从环境变量导入凭证...', 'info');
+                
+                const response = await fetch('/auth/load-env-creds', {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    if (data.loaded_count > 0) {
+                        showStatus(`✅ 成功导入 ${data.loaded_count}/${data.total_count} 个凭证文件`, 'success');
+                        // 刷新状态
+                        setTimeout(() => checkEnvCredsStatus(), 1000);
+                    } else {
+                        showStatus(`⚠️ ${data.message}`, 'info');
+                    }
+                } else {
+                    showStatus(`导入失败: ${data.detail || data.error || '未知错误'}`, 'error');
+                }
+            } catch (error) {
+                console.error('loadEnvCredentials error:', error);
+                showStatus(`网络错误: ${error.message}`, 'error');
+            }
+        }
+
+        async function clearEnvCredentials() {
+            if (!confirm('确定要清除所有从环境变量导入的凭证文件吗？\n这将删除所有文件名以 "env-" 开头的认证文件。')) {
+                return;
+            }
+            
+            try {
+                showStatus('正在清除环境变量凭证文件...', 'info');
+                
+                const response = await fetch('/auth/env-creds', {
+                    method: 'DELETE',
+                    headers: getAuthHeaders()
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showStatus(`✅ 成功删除 ${data.deleted_count} 个环境变量凭证文件`, 'success');
+                    // 刷新状态
+                    setTimeout(() => checkEnvCredsStatus(), 1000);
+                } else {
+                    showStatus(`清除失败: ${data.detail || data.error || '未知错误'}`, 'error');
+                }
+            } catch (error) {
+                console.error('clearEnvCredentials error:', error);
+                showStatus(`网络错误: ${error.message}`, 'error');
+            }
+        }
+
+        // 批量操作相关函数
+        function toggleFileSelection(filename) {
+            if (selectedCredFiles.has(filename)) {
+                selectedCredFiles.delete(filename);
+            } else {
+                selectedCredFiles.add(filename);
+            }
+            updateBatchControls();
+        }
+        
+        function toggleSelectAll() {
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            const fileCheckboxes = document.querySelectorAll('.file-checkbox');
+            
+            if (selectAllCheckbox.checked) {
+                // 全选当前页面的文件
+                fileCheckboxes.forEach(checkbox => {
+                    const filename = checkbox.getAttribute('data-filename');
+                    selectedCredFiles.add(filename);
+                    checkbox.checked = true;
+                });
+            } else {
+                // 取消全选
+                selectedCredFiles.clear();
+                fileCheckboxes.forEach(checkbox => {
+                    checkbox.checked = false;
+                });
+            }
+            updateBatchControls();
+        }
+        
+        function updateBatchControls() {
+            const selectedCount = selectedCredFiles.size;
+            const selectedCountElement = document.getElementById('selectedCount');
+            const batchEnableBtn = document.getElementById('batchEnableBtn');
+            const batchDisableBtn = document.getElementById('batchDisableBtn');
+            const batchDeleteBtn = document.getElementById('batchDeleteBtn');
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            
+            selectedCountElement.textContent = `已选择 ${selectedCount} 项`;
+            
+            // 启用/禁用批量操作按钮
+            const hasSelection = selectedCount > 0;
+            batchEnableBtn.disabled = !hasSelection;
+            batchDisableBtn.disabled = !hasSelection;
+            batchDeleteBtn.disabled = !hasSelection;
+            
+            // 更新全选复选框状态
+            const currentPageFileCount = document.querySelectorAll('.file-checkbox').length;
+            const currentPageSelectedCount = Array.from(document.querySelectorAll('.file-checkbox'))
+                .filter(checkbox => selectedCredFiles.has(checkbox.getAttribute('data-filename'))).length;
+            
+            if (currentPageSelectedCount === 0) {
+                selectAllCheckbox.indeterminate = false;
+                selectAllCheckbox.checked = false;
+            } else if (currentPageSelectedCount === currentPageFileCount) {
+                selectAllCheckbox.indeterminate = false;
+                selectAllCheckbox.checked = true;
+            } else {
+                selectAllCheckbox.indeterminate = true;
+                selectAllCheckbox.checked = false;
+            }
+            
+            // 更新页面上的复选框状态
+            document.querySelectorAll('.file-checkbox').forEach(checkbox => {
+                const filename = checkbox.getAttribute('data-filename');
+                checkbox.checked = selectedCredFiles.has(filename);
+            });
+        }
+        
+        async function batchAction(action) {
+            const selectedFiles = Array.from(selectedCredFiles);
+            
+            if (selectedFiles.length === 0) {
+                showStatus('请先选择要操作的文件', 'error');
+                return;
+            }
+            
+            let confirmMessage = '';
+            switch (action) {
+                case 'enable':
+                    confirmMessage = `确定要启用选中的 ${selectedFiles.length} 个文件吗？`;
+                    break;
+                case 'disable':
+                    confirmMessage = `确定要禁用选中的 ${selectedFiles.length} 个文件吗？`;
+                    break;
+                case 'delete':
+                    confirmMessage = `确定要删除选中的 ${selectedFiles.length} 个文件吗？\n注意：此操作不可恢复！`;
+                    break;
+            }
+            
+            if (!confirm(confirmMessage)) {
+                return;
+            }
+            
+            try {
+                showStatus(`正在执行批量${action === 'enable' ? '启用' : action === 'disable' ? '禁用' : '删除'}操作...`, 'info');
+                
+                const requestBody = {
+                    action: action,
+                    filenames: selectedFiles
+                };
+                
+                const response = await fetch('/creds/batch-action', {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(requestBody)
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showStatus(`批量操作完成：成功处理 ${data.success_count}/${selectedFiles.length} 个文件`, 'success');
+                    
+                    // 清空选择
+                    selectedCredFiles.clear();
+                    updateBatchControls();
+                    
+                    // 刷新列表
+                    await refreshCredsStatus();
+                } else {
+                    showStatus(`批量操作失败: ${data.detail || data.error || '未知错误'}`, 'error');
+                }
+            } catch (error) {
+                console.error('batchAction error:', error);
+                showStatus(`批量操作网络错误: ${error.message}`, 'error');
+            }
+        }
+
+        // 邮箱相关函数
+        async function fetchUserEmail(filename) {
+            try {
+                showStatus('正在获取用户邮箱...', 'info');
+                
+                const response = await fetch(`/creds/fetch-email/${encodeURIComponent(filename)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.user_email) {
+                    showStatus(`成功获取邮箱: ${data.user_email}`, 'success');
+                    // 刷新凭证状态以更新显示
+                    await refreshCredsStatus();
+                } else {
+                    showStatus(data.message || '无法获取用户邮箱', 'error');
+                }
+            } catch (error) {
+                console.error('fetchUserEmail error:', error);
+                showStatus(`获取邮箱失败: ${error.message}`, 'error');
+            }
+        }
+
+        async function refreshAllEmails() {
+            try {
+                if (!confirm('确定要刷新所有凭证的用户邮箱吗？这可能需要一些时间。')) {
+                    return;
+                }
+                
+                showStatus('正在刷新所有用户邮箱...', 'info');
+                
+                const response = await fetch('/creds/refresh-all-emails', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showStatus(`邮箱刷新完成：成功获取 ${data.success_count}/${data.total_count} 个邮箱地址`, 'success');
+                    // 刷新凭证状态以更新显示
+                    await refreshCredsStatus();
+                } else {
+                    showStatus(data.message || '邮箱刷新失败', 'error');
+                }
+            } catch (error) {
+                console.error('refreshAllEmails error:', error);
+                showStatus(`邮箱刷新网络错误: ${error.message}`, 'error');
             }
         }
 
