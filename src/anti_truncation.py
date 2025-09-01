@@ -4,19 +4,29 @@ Anti-Truncation Module - Ensures complete streaming output
 """
 import json
 from typing import Dict, Any, AsyncGenerator
+
 from fastapi.responses import StreamingResponse
 
 from log import log
+from .memory_manager import check_memory_limit
 
 # 反截断配置
 DONE_MARKER = "[done]"
 MAX_CONTINUATION_ATTEMPTS = 3
-CONTINUATION_PROMPT = "\n\n请继续输出剩余内容，在结束时输出[done]标记。"
+CONTINUATION_PROMPT = f"""请从刚才被截断的地方继续输出剩余的所有内容。
+
+重要提醒：
+1. 不要重复前面已经输出的内容
+2. 直接继续输出，无需任何前言或解释
+3. 当你完整完成所有内容输出后，必须在最后一行单独输出：{DONE_MARKER}
+4. {DONE_MARKER} 标记表示你的回答已经完全结束，这是必需的结束标记
+
+现在请继续输出："""
 
 def apply_anti_truncation(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     对请求payload应用反截断处理
-    在systemInstruction中添加提醒，要求模型在结束时输出[done]标记
+    在systemInstruction中添加提醒，要求模型在结束时输出DONE_MARKER标记
     
     Args:
         payload: 原始请求payload
@@ -36,7 +46,24 @@ def apply_anti_truncation(payload: Dict[str, Any]) -> Dict[str, Any]:
     
     # 添加反截断指令
     anti_truncation_instruction = {
-        "text": f"重要提醒：当你完成回答时，请在输出的最后添加标记 {DONE_MARKER} 以表示回答完整结束。这非常重要，请务必记住。"
+        "text": f"""严格执行以下输出结束规则：
+
+1. 当你完成完整回答时，必须在输出的最后单独一行输出：{DONE_MARKER}
+2. {DONE_MARKER} 标记表示你的回答已经完全结束，这是必需的结束标记
+3. 只有输出了 {DONE_MARKER} 标记，系统才认为你的回答是完整的
+4. 如果你的回答被截断，系统会要求你继续输出剩余内容
+5. 无论回答长短，都必须以 {DONE_MARKER} 标记结束
+
+示例格式：
+```
+你的回答内容...
+更多回答内容...
+{DONE_MARKER}
+```
+
+注意：{DONE_MARKER} 必须单独占一行，前面不要有任何其他字符。
+
+这个规则对于确保输出完整性极其重要，请严格遵守。"""
     }
     
     # 检查是否已经包含反截断指令
@@ -65,13 +92,18 @@ class AntiTruncationStreamProcessor:
         self.original_request_func = original_request_func
         self.base_payload = payload.copy()
         self.max_attempts = max_attempts
-        self.collected_content = ""
+        self.collected_content = []  # 使用列表避免字符串重复拼接
         self.current_attempt = 0
         
     async def process_stream(self) -> AsyncGenerator[bytes, None]:
         """处理流式响应，检测并处理截断"""
         
         while self.current_attempt < self.max_attempts:
+            # 在每次尝试前检查内存限制
+            if not check_memory_limit():
+                log.warning("内存压力过大，跳过反截断处理")
+                yield b'data: [DONE]\n\n'
+                return
             self.current_attempt += 1
             
             # 构建当前请求payload
@@ -93,12 +125,24 @@ class AntiTruncationStreamProcessor:
                 found_done_marker = False
                 
                 async for chunk in response.body_iterator:
-                    if not chunk or not chunk.startswith(b'data: '):
+                    if not chunk:
                         yield chunk
                         continue
                     
+                    # 处理不同数据类型的startswith问题
+                    if isinstance(chunk, bytes):
+                        if not chunk.startswith(b'data: '):
+                            yield chunk
+                            continue
+                        payload_data = chunk[len(b'data: '):]
+                    else:
+                        chunk_str = str(chunk)
+                        if not chunk_str.startswith('data: '):
+                            yield chunk
+                            continue
+                        payload_data = chunk_str[len('data: '):].encode()
+                    
                     # 解析chunk内容
-                    payload_data = chunk[len(b'data: '):]
                     
                     if payload_data.strip() == b'[DONE]':
                         # 检查是否找到了done标记
@@ -119,7 +163,7 @@ class AntiTruncationStreamProcessor:
                             chunk_content += content
                             
                             # 检查是否包含done标记
-                            if DONE_MARKER.lower() in content.lower():
+                            if self._check_done_marker_in_chunk_content(content):
                                 found_done_marker = True
                                 log.info("Anti-truncation: Found [done] marker in chunk")
                         
@@ -129,17 +173,35 @@ class AntiTruncationStreamProcessor:
                         yield chunk
                         continue
                 
-                # 更新收集的内容
-                self.collected_content += chunk_content
+                # 更新收集的内容 - 使用列表避免字符串重复拼接
+                if chunk_content:
+                    self.collected_content.append(chunk_content)
+                    
+                    # 内存保护：如果收集的内容过多，强制结束
+                    if len(self.collected_content) > 100:  # 限制最大chunk数
+                        log.warning("反截断收集内容过多，强制结束以保护内存")
+                        yield b'data: [DONE]\n\n'
+                        return
                 
                 # 如果找到了done标记，结束
                 if found_done_marker:
                     yield b'data: [DONE]\n\n'
                     return
                 
+                # 最后再检查一次累积的内容（防止done标记跨chunk出现）
+                accumulated_text = ''.join(self.collected_content) if self.collected_content else ""
+                if self._check_done_marker_in_text(accumulated_text):
+                    log.info("Anti-truncation: Found [done] marker in accumulated content")
+                    yield b'data: [DONE]\n\n'
+                    return
+                
                 # 如果没找到done标记且不是最后一次尝试，准备续传
                 if self.current_attempt < self.max_attempts:
-                    log.info(f"Anti-truncation: No [done] marker found, preparing continuation (attempt {self.current_attempt + 1})")
+                    total_length = sum(len(chunk) for chunk in self.collected_content) if self.collected_content else 0
+                    log.info(f"Anti-truncation: No [done] marker found in output (length: {total_length}), preparing continuation (attempt {self.current_attempt + 1})")
+                    if self.collected_content and total_length > 100:
+                        last_chunk = self.collected_content[-1] if self.collected_content else ""
+                        log.debug(f"Anti-truncation: Current collected content ends with: {'...' + last_chunk[-100:]}")
                     # 在下一次循环中会继续
                     continue
                 else:
@@ -184,16 +246,28 @@ class AntiTruncationStreamProcessor:
         
         # 如果有收集到的内容，添加到对话中
         if self.collected_content:
-            # 添加模型的回复
+            # 拼接收集的内容并添加模型的回复
+            accumulated_text = ''.join(self.collected_content)
             new_contents.append({
                 "role": "model",
-                "parts": [{"text": self.collected_content}]
+                "parts": [{"text": accumulated_text}]
             })
+        
+        # 构建具体的续写指令，包含前面的内容摘要
+        content_summary = ""
+        if self.collected_content:
+            accumulated_text = ''.join(self.collected_content)
+            if len(accumulated_text) > 200:
+                content_summary = f"\n\n前面你已经输出了约 {len(accumulated_text)} 个字符的内容，结尾是：\n\"...{accumulated_text[-100:]}\""
+            else:
+                content_summary = f"\n\n前面你已经输出的内容是：\n\"{accumulated_text}\""
+        
+        detailed_continuation_prompt = f"""{CONTINUATION_PROMPT}{content_summary}"""
         
         # 添加继续指令
         continuation_message = {
-            "role": "user",
-            "parts": [{"text": CONTINUATION_PROMPT}]
+            "role": "user", 
+            "parts": [{"text": detailed_continuation_prompt}]
         }
         new_contents.append(continuation_message)
         
@@ -239,10 +313,12 @@ class AntiTruncationStreamProcessor:
             
             # 检查是否包含done标记
             text_content = self._extract_content_from_response(response_data)
+            has_done_marker = self._check_done_marker_in_text(text_content)
             
-            if DONE_MARKER.lower() not in text_content.lower() and self.current_attempt < self.max_attempts:
+            if not has_done_marker and self.current_attempt < self.max_attempts:
                 log.info("Anti-truncation: Non-streaming response needs continuation")
-                self.collected_content += text_content
+                if text_content:
+                    self.collected_content.append(text_content)
                 # 递归处理续传
                 return await self._handle_non_streaming_response(
                     await self.original_request_func(self._build_current_payload())
@@ -259,6 +335,18 @@ class AntiTruncationStreamProcessor:
                     "code": 500
                 }
             }).encode()
+    
+    def _check_done_marker_in_text(self, text: str) -> bool:
+        """检测文本中是否包含DONE_MARKER（只检测指定标记）"""
+        if not text:
+            return False
+
+        # 只要文本中出现DONE_MARKER即可
+        return DONE_MARKER in text
+    
+    def _check_done_marker_in_chunk_content(self, content: str) -> bool:
+        """检查单个chunk内容中是否包含done标记"""
+        return self._check_done_marker_in_text(content)
     
     def _extract_content_from_response(self, data: Dict[str, Any]) -> str:
         """从响应数据中提取文本内容"""

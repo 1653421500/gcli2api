@@ -2,21 +2,22 @@
 Gemini Router - Handles native Gemini format API requests
 处理原生Gemini格式请求的路由模块
 """
+import asyncio
 import json
 from contextlib import asynccontextmanager
-
-from fastapi import APIRouter, HTTPException, Depends, Request, Path, Query, status, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Optional
 
-from .google_api_client import send_gemini_request, build_gemini_payload_from_native
-from .credential_manager import CredentialManager
-from config import get_config_value, get_available_models, is_fake_streaming_model, is_anti_truncation_model, get_base_model_from_feature_model, get_anti_truncation_max_attempts
-from .anti_truncation import apply_anti_truncation_to_stream
-from config import get_base_model_name
-from log import log
+from fastapi import APIRouter, HTTPException, Depends, Request, Path, Query, status, Header
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from config import get_config_value, get_available_models, is_fake_streaming_model, is_anti_truncation_model, get_base_model_from_feature_model, get_anti_truncation_max_attempts, get_base_model_name
+from log import log
+from .anti_truncation import apply_anti_truncation_to_stream
+from .credential_manager import CredentialManager
+from .google_api_client import send_gemini_request, build_gemini_payload_from_native
+from .memory_manager import check_memory_limit, get_memory_usage
+from .openai_transfer import _extract_content_and_reasoning
 # 创建路由器
 router = APIRouter()
 security = HTTPBearer()
@@ -35,8 +36,8 @@ async def get_credential_manager():
 
 def authenticate(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """验证用户密码（Bearer Token方式）"""
-    from config import get_server_password
-    password = get_server_password()
+    from config import get_api_password
+    password = get_api_password()
     token = credentials.credentials
     if token != password:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="密码错误")
@@ -49,8 +50,8 @@ def authenticate_gemini_flexible(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(lambda: None)
 ) -> str:
     """灵活验证：支持x-goog-api-key头部、URL参数key或Authorization Bearer"""
-    from config import get_server_password
-    password = get_server_password()
+    from config import get_api_password
+    password = get_api_password()
     
     # 尝试从URL参数key获取（Google官方标准方式）
     if key:
@@ -78,6 +79,8 @@ def authenticate_gemini_flexible(
         detail="Missing or invalid authentication. Use 'key' URL parameter, 'x-goog-api-key' header, or 'Authorization: Bearer <token>'"
     )
 
+@router.get("/v1/v1beta/models")
+@router.get("/v1/v1/models")
 @router.get("/v1beta/models")
 @router.get("/v1/models")
 async def list_gemini_models():
@@ -110,6 +113,8 @@ async def list_gemini_models():
         "models": gemini_models
     })
 
+@router.post("/v1/v1beta/models/{model:path}:generateContent")
+@router.post("/v1/v1/models/{model:path}:generateContent")
 @router.post("/v1beta/models/{model:path}:generateContent")
 @router.post("/v1/models/{model:path}:generateContent")
 async def generate_content(
@@ -118,6 +123,12 @@ async def generate_content(
     api_key: str = Depends(authenticate_gemini_flexible)
 ):
     """处理Gemini格式的内容生成请求（非流式）"""
+    
+    # 内存检查
+    if not check_memory_limit():
+        memory_info = get_memory_usage()
+        log.error(f"内存使用过高，拒绝请求: {memory_info['rss_mb']:.1f}MB ({memory_info['usage_percent']*100:.1f}%)")
+        raise HTTPException(status_code=503, detail="服务器内存使用过高，请稍后重试")
     
     # 获取原始请求数据
     try:
@@ -165,7 +176,7 @@ async def generate_content(
         return JSONResponse(content={
             "candidates": [{
                 "content": {
-                    "parts": [{"text": "公益站正常工作中"}],
+                    "parts": [{"text": "gcli2api工作中"}],
                     "role": "model"
                 },
                 "finishReason": "STOP",
@@ -178,8 +189,8 @@ async def generate_content(
         # 获取凭证
         creds, project_id = await cred_mgr.get_credentials_and_project()
         if not creds:
-            log.error("No credentials available")
-            raise HTTPException(status_code=500, detail="No credentials available")
+            log.error("当前无凭证，请去控制台获取")
+            raise HTTPException(status_code=500, detail="当前无凭证，请去控制台获取")
         
         # 增加调用计数
         await cred_mgr.increment_call_count()
@@ -213,6 +224,8 @@ async def generate_content(
             else:
                 raise HTTPException(status_code=500, detail="Response processing failed")
 
+@router.post("/v1/v1beta/models/{model:path}:streamGenerateContent")
+@router.post("/v1/v1/models/{model:path}:streamGenerateContent")
 @router.post("/v1beta/models/{model:path}:streamGenerateContent")
 @router.post("/v1/models/{model:path}:streamGenerateContent")
 async def stream_generate_content(
@@ -224,6 +237,12 @@ async def stream_generate_content(
     log.info(f"Stream request received for model: {model}")
     log.info(f"Request headers: {dict(request.headers)}")
     log.info(f"API key received: {api_key[:10] if api_key else None}...")
+    
+    # 内存检查
+    if not check_memory_limit():
+        memory_info = get_memory_usage()
+        log.error(f"内存使用过高，拒绝流式请求: {memory_info['rss_mb']:.1f}MB ({memory_info['usage_percent']*100:.1f}%)")
+        raise HTTPException(status_code=503, detail="服务器内存使用过高，请稍后重试")
     
     # 获取原始请求数据
     try:
@@ -267,8 +286,8 @@ async def stream_generate_content(
         # 获取凭证
         creds, project_id = await cred_mgr.get_credentials_and_project()
         if not creds:
-            log.error("No credentials available")
-            raise HTTPException(status_code=500, detail="No credentials available")
+            log.error("当前无凭证，请去控制台获取")
+            raise HTTPException(status_code=500, detail="当前无凭证，请去控制台获取")
         
         # 增加调用计数
         await cred_mgr.increment_call_count()
@@ -296,7 +315,9 @@ async def stream_generate_content(
         
         # 直接返回流式响应
         return response
-
+    
+@router.get("/v1/v1beta/models/{model:path}")
+@router.get("/v1/v1/models/{model:path}")
 @router.get("/v1beta/models/{model:path}")
 @router.get("/v1/models/{model:path}")
 async def get_model_info(
@@ -331,7 +352,6 @@ async def get_model_info(
 
 async def fake_stream_response_gemini(request_data: dict, model: str):
     """处理Gemini格式的假流式响应"""
-    import asyncio
     
     async def gemini_stream_generator():
         try:
@@ -340,10 +360,10 @@ async def fake_stream_response_gemini(request_data: dict, model: str):
                 # 获取凭证
                 creds, project_id = await cred_mgr.get_credentials_and_project()
                 if not creds:
-                    log.error("No credentials available")
+                    log.error("当前无凭证，请去控制台获取")
                     error_chunk = {
                         "error": {
-                            "message": "No credentials available",
+                            "message": "当前无凭证，请去控制台获取",
                             "type": "authentication_error",
                             "code": 500
                         }
@@ -416,7 +436,6 @@ async def fake_stream_response_gemini(request_data: dict, model: str):
                     
                     # 发送完整内容作为单个chunk，使用思维链分离
                     if "candidates" in response_data and response_data["candidates"]:
-                        from .openai_transfer import _extract_content_and_reasoning
                         candidate = response_data["candidates"][0]
                         if "content" in candidate and "parts" in candidate["content"]:
                             parts = candidate["content"]["parts"]

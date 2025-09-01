@@ -8,16 +8,17 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, HTTPException, Depends, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from .models import ChatCompletionRequest, ModelList, Model
-from .openai_transfer import openai_request_to_gemini, gemini_response_to_openai, gemini_stream_chunk_to_openai
-from .google_api_client import send_gemini_request, build_gemini_payload_from_openai
-from .credential_manager import CredentialManager
-from .anti_truncation import apply_anti_truncation_to_stream
 from config import get_available_models, is_fake_streaming_model, is_anti_truncation_model, get_base_model_from_feature_model, get_anti_truncation_max_attempts
 from log import log
+from .anti_truncation import apply_anti_truncation_to_stream
+from .credential_manager import CredentialManager
+from .google_api_client import send_gemini_request, build_gemini_payload_from_openai
+from .memory_manager import check_memory_limit, get_memory_usage
+from .models import ChatCompletionRequest, ModelList, Model
+from .openai_transfer import openai_request_to_gemini, gemini_response_to_openai, gemini_stream_chunk_to_openai
 
 # 创建路由器
 router = APIRouter()
@@ -37,8 +38,8 @@ async def get_credential_manager():
 
 def authenticate(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """验证用户密码"""
-    from config import get_server_password
-    password = get_server_password()
+    from config import get_api_password
+    password = get_api_password()
     token = credentials.credentials
     if token != password:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="密码错误")
@@ -56,6 +57,12 @@ async def chat_completions(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """处理OpenAI格式的聊天完成请求"""
+    # 内存检查
+    if not check_memory_limit():
+        memory_info = get_memory_usage()
+        log.error(f"内存使用过高，拒绝请求: {memory_info['rss_mb']:.1f}MB ({memory_info['usage_percent']*100:.1f}%)")
+        raise HTTPException(status_code=503, detail="服务器内存使用过高，请稍后重试")
+    
     token = authenticate(credentials)
     
     # 获取原始请求数据
@@ -77,7 +84,7 @@ async def chat_completions(
         getattr(request_data.messages[0], "role", None) == "user" and
         getattr(request_data.messages[0], "content", None) == "Hi"):
         return JSONResponse(content={
-            "choices": [{"message": {"role": "assistant", "content": "公益站正常工作中"}}]
+            "choices": [{"message": {"role": "assistant", "content": "gcli2api正常工作中"}}]
         })
     
     # 限制max_tokens
@@ -123,8 +130,8 @@ async def chat_completions(
         # 获取凭证
         creds, project_id = await cred_mgr.get_credentials_and_project()
         if not creds:
-            log.error("No credentials available")
-            raise HTTPException(status_code=500, detail="No credentials available")
+            log.error("当前无凭证，请去控制台获取")
+            raise HTTPException(status_code=500, detail="当前无凭证，请去控制台获取")
         
         # 增加调用计数
         await cred_mgr.increment_call_count()
@@ -303,23 +310,50 @@ async def fake_stream_response(api_payload: dict, creds, cred_mgr: CredentialMan
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
-async def convert_streaming_response(gemini_response: StreamingResponse, model: str) -> StreamingResponse:
+async def convert_streaming_response(gemini_response, model: str) -> StreamingResponse:
     """转换流式响应为OpenAI格式"""
     response_id = str(uuid.uuid4())
     
     async def openai_stream_generator():
         try:
-            async for chunk in gemini_response.body_iterator:
-                if not chunk or not chunk.startswith(b'data: '):
-                    continue
-                
-                payload = chunk[len(b'data: '):]
-                try:
-                    gemini_chunk = json.loads(payload.decode())
-                    openai_chunk = gemini_stream_chunk_to_openai(gemini_chunk, model, response_id)
-                    yield f"data: {json.dumps(openai_chunk, separators=(',',':'))}\n\n".encode()
-                except json.JSONDecodeError:
-                    continue
+            # 处理不同类型的响应对象
+            if hasattr(gemini_response, 'body_iterator'):
+                # FastAPI StreamingResponse
+                async for chunk in gemini_response.body_iterator:
+                    if not chunk:
+                        continue
+                    
+                    # 处理不同数据类型的startswith问题
+                    if isinstance(chunk, bytes):
+                        if not chunk.startswith(b'data: '):
+                            continue
+                        payload = chunk[len(b'data: '):]
+                    else:
+                        chunk_str = str(chunk)
+                        if not chunk_str.startswith('data: '):
+                            continue
+                        payload = chunk_str[len('data: '):].encode()
+                    try:
+                        gemini_chunk = json.loads(payload.decode())
+                        openai_chunk = gemini_stream_chunk_to_openai(gemini_chunk, model, response_id)
+                        yield f"data: {json.dumps(openai_chunk, separators=(',',':'))}\n\n".encode()
+                    except json.JSONDecodeError:
+                        continue
+            else:
+                # 其他类型的响应，尝试直接处理
+                log.warning(f"Unexpected response type: {type(gemini_response)}")
+                error_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "Response type error"},
+                        "finish_reason": "stop"
+                    }]
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n".encode()
             
             # 发送结束标记
             yield "data: [DONE]\n\n".encode()
