@@ -1,910 +1,611 @@
 """
-High-performance credential manager with call-based rotation and caching.
-Rotates credentials based on API call count rather than time for better quota distribution.
+凭证管理器 - 完全基于统一存储中间层
 """
 import asyncio
-import glob
-import json
-import os
 import time
 from datetime import datetime, timezone
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Dict, Any, List, Optional, Tuple
+from contextlib import asynccontextmanager
 
-import aiofiles
-import httpx
-import toml
-from google.auth.transport.requests import Request as GoogleAuthRequest
-from google.oauth2.credentials import Credentials
-
-from config import (
-    CREDENTIALS_DIR, CODE_ASSIST_ENDPOINT,
-    get_proxy_config, get_calls_per_rotation, get_http_timeout, get_max_connections,
-    get_auto_ban_enabled,
-    get_auto_ban_error_codes
-)
+from config import get_calls_per_rotation, is_mongodb_mode
 from log import log
-from .memory_manager import register_cache_for_cleanup
-from .utils import get_user_agent, get_client_metadata
+from .storage_adapter import get_storage_adapter
+from .google_oauth_api import fetch_user_email_from_file, Credentials
+from .task_manager import task_manager
 
-def _normalize_to_relative_path(filepath: str, base_dir: str = None) -> str:
-    """将文件路径标准化为相对于CREDENTIALS_DIR的相对路径"""
-    if base_dir is None:
-        base_dir = CREDENTIALS_DIR
-    
-    # 如果已经是相对路径且在当前目录内，直接返回
-    if not os.path.isabs(filepath):
-        # 检查相对路径是否安全（不包含..等）
-        if ".." not in filepath and filepath.endswith('.json'):
-            return os.path.basename(filepath)  # 只保留文件名
-    
-    # 绝对路径转相对路径
-    abs_filepath = os.path.abspath(filepath)
-    abs_base_dir = os.path.abspath(base_dir)
-    
-    try:
-        # 如果文件在base_dir内，返回相对路径（只要文件名）
-        if abs_filepath.startswith(abs_base_dir):
-            return os.path.basename(abs_filepath)
-    except Exception:
-        pass
-    
-    # 环境变量路径保持原样
-    if filepath.startswith('<ENV_'):
-        return filepath
-    
-    # 其他情况也只返回文件名
-    return os.path.basename(filepath)
 
 class CredentialManager:
-    """High-performance credential manager with call-based rotation and caching."""
-
-    def __init__(self, calls_per_rotation: int = None):  # Use dynamic config by default
-        self._lock = asyncio.Lock()
-        self._current_credential_index = 0
-        self._credential_files: List[str] = []
+    """
+    统一凭证管理器
+    所有存储操作通过storage_adapter进行
+    """
+    
+    def __init__(self):
+        # 核心状态
+        self._initialized = False
+        self._storage_adapter = None
         
-        # Call-based rotation instead of time-based
-        self._cached_credentials: Optional[Credentials] = None
-        self._cached_project_id: Optional[str] = None
-        self._cache_timestamp = 0  # 缓存时间戳，用于TTL机制
+        # 凭证轮换相关
+        self._credential_files: List[str] = []  # 存储凭证文件名列表
+        self._current_credential_index = 0
         self._call_count = 0
-        self._calls_per_rotation = calls_per_rotation or get_calls_per_rotation()
+        self._last_scan_time = 0
+        
+        # 当前使用的凭证信息
+        self._current_credential_file: Optional[str] = None
+        self._current_credential_data: Optional[Dict[str, Any]] = None
+        self._current_credential_state: Dict[str, Any] = {}
+        
+        # 并发控制
+        self._state_lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
+        
+        # 工作线程控制
+        self._shutdown_event = asyncio.Event()
+        self._write_worker_running = False
+        self._write_worker_task = None
+        
+        # 原子操作计数器
+        self._atomic_counter = 0
+        self._atomic_lock = asyncio.Lock()
         
         # Onboarding state
         self._onboarding_complete = False
         self._onboarding_checked = False
-        
-        # HTTP client reuse
-        self._http_client: Optional[httpx.AsyncClient] = None
-        
-        # TOML状态文件路径
-        self._state_file = os.path.join(CREDENTIALS_DIR, "creds_state.toml")
-        self._creds_state: Dict[str, Any] = {}
-        self._state_dirty = False  # 状态脏标记，减少不必要的写入
-        
-        # 当前使用的凭证文件路径
-        self._current_file_path: Optional[str] = None
-        
-        # 最后一次文件扫描时间和缓存TTL
-        self._last_file_scan_time = 0
-        self._cache_ttl = 300  # 5分钟缓存TTL
-        
-        self._initialized = False
-
+    
     async def initialize(self):
-        """Initialize the credential manager."""
-        async with self._lock:
+        """初始化凭证管理器"""
+        async with self._state_lock:
             if self._initialized:
                 return
             
-            # 加载状态文件
-            await self._load_state()
+            # 初始化统一存储适配器
+            self._storage_adapter = await get_storage_adapter()
             
-            await self._discover_credential_files()
+            # 启动后台工作线程
+            await self._start_background_workers()
             
-            # Initialize HTTP client with connection pooling and proxy support
-            proxy = get_proxy_config()
-            client_kwargs = {
-                "timeout": get_http_timeout(),
-                "limits": httpx.Limits(max_keepalive_connections=20, max_connections=get_max_connections())
-            }
-            if proxy:
-                client_kwargs["proxy"] = proxy
-            self._http_client = httpx.AsyncClient(**client_kwargs)
+            # 发现并加载凭证
+            await self._discover_credentials()
             
             self._initialized = True
-            
-            # 注册到内存管理器
-            register_cache_for_cleanup("credential_manager", self)
-
+            storage_type = "MongoDB" if await is_mongodb_mode() else "File"
+            log.debug(f"Credential manager initialized with {storage_type} storage backend")
+    
     async def close(self):
-        """Clean up resources."""
-        if self._http_client:
-            await self._http_client.aclose()
-            self._http_client = None
+        """清理资源"""
+        log.debug("Closing credential manager...")
+        
+        # 设置关闭标志
+        self._shutdown_event.set()
+        
+        # 等待后台任务结束
+        if self._write_worker_task:
+            try:
+                await asyncio.wait_for(self._write_worker_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                log.warning("Write worker task did not finish within timeout")
+                if not self._write_worker_task.done():
+                    self._write_worker_task.cancel()
+        
+        self._initialized = False
+        log.debug("Credential manager closed")
     
-    def emergency_cleanup(self) -> Dict[str, int]:
-        """紧急内存清理"""
-        log.warning("执行凭证管理器紧急内存清理")
-        cleaned = {
-            'cache_cleared': 0,
-            'states_cleaned': 0
-        }
-        
-        # 清理缓存
-        if self._cached_credentials:
-            self._cached_credentials = None
-            self._cached_project_id = None
-            self._cache_timestamp = 0
-            cleaned['cache_cleared'] = 1
-        
-        # 清理过期状态
-        if self._creds_state:
-            original_count = len(self._creds_state)
-            # 只保留最近成功的凭证状态
-            current_time = time.time()
-            keep_states = {}
-            for filename, state in list(self._creds_state.items()):
-                if state.get("last_success") and not state.get("disabled", False):
-                    keep_states[filename] = state
-                    if len(keep_states) >= 5:  # 最多保留5个状态
-                        break
-            
-            self._creds_state = keep_states
-            self._state_dirty = True
-            cleaned['states_cleaned'] = original_count - len(keep_states)
-        
-        log.info(f"凭证管理器紧急清理完成: {cleaned}")
-        return cleaned
-
-    async def _load_state(self):
-        """从TOML文件加载状态"""
-        try:
-            if os.path.exists(self._state_file):
-                async with aiofiles.open(self._state_file, "r", encoding="utf-8") as f:
-                    content = await f.read()
-                self._creds_state = toml.loads(content)
-            else:
-                self._creds_state = {}
-            
-        except Exception as e:
-            log.warning(f"Failed to load state file: {e}")
-            self._creds_state = {}
-
-    async def _save_state(self):
-        """保存状态到TOML文件"""
-        # 使用脏标记，只在必要时写入
-        if not self._state_dirty:
-            return
-            
-        try:
-            os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
-            async with aiofiles.open(self._state_file, "w", encoding="utf-8") as f:
-                await f.write(toml.dumps(self._creds_state))
-            self._state_dirty = False  # 清除脏标记
-        except Exception as e:
-            log.error(f"Failed to save state file: {e}")
-
-
+    async def _start_background_workers(self):
+        """启动后台工作线程"""
+        if not self._write_worker_running:
+            self._write_worker_running = True
+            self._write_worker_task = task_manager.create_task(
+                self._background_worker(), 
+                name="credential_background_worker"
+            )
     
-    def _get_cred_state(self, filename: str) -> Dict[str, Any]:
-        """获取指定凭证文件的状态，使用相对路径作为键"""
-        # 标准化为相对路径
-        relative_filename = _normalize_to_relative_path(filename)
-        
-        # 先检查是否已存在（支持向后兼容）
-        existing_state = None
-        existing_key = None
-        
-        # 优先查找相对路径键
-        if relative_filename in self._creds_state:
-            return self._creds_state[relative_filename]
-        
-        # 向后兼容：查找可能的绝对路径键并迁移
-        for key, state in list(self._creds_state.items()):
-            if os.path.isabs(key):
-                # 检查绝对路径是否对应同一个文件
-                if _normalize_to_relative_path(key) == relative_filename:
-                    existing_state = state
-                    existing_key = key
+    async def _background_worker(self):
+        """后台工作线程，处理定期任务"""
+        while not self._shutdown_event.is_set():
+            try:
+                # 每60秒检查一次凭证更新
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=60.0)
+                if self._shutdown_event.is_set():
                     break
-            elif key == relative_filename:
-                # 理论上不会到这里，但为安全起见
-                return state
-        
-        if existing_state is not None:
-            # 迁移绝对路径键到相对路径键
-            self._creds_state[relative_filename] = existing_state
-            del self._creds_state[existing_key]
-            log.info(f"Migrated creds state key from absolute to relative: {existing_key} -> {relative_filename}")
-            return existing_state
-        
-        # 创建新状态（使用相对路径作为键）
-        log.debug(f"Creating new state for {relative_filename}")
-        self._creds_state[relative_filename] = {
-            "error_codes": [],
-            "disabled": False,
-            "last_success": None,
-            "user_email": None
-        }
-        self._state_dirty = True  # 标记状态已修改
-        return self._creds_state[relative_filename]
-
-    async def record_error(self, filename: str, status_code: int, response_content: str = ""):
-        """记录API错误码"""
-        async with self._lock:
-            # 使用相对路径进行状态管理
-            relative_filename = _normalize_to_relative_path(filename)
-            cred_state = self._get_cred_state(filename)
-            
-            # 记录错误码
-            if "error_codes" not in cred_state:
-                cred_state["error_codes"] = []
-            if status_code not in cred_state["error_codes"]:
-                cred_state["error_codes"].append(status_code)
-            
-            # 简单记录429错误，不做特殊处理
-            if status_code == 429:
-                log.info(f"Got 429 error for {os.path.basename(filename)}")
-            
-            # 自动封禁功能
-            auto_ban_enabled = get_auto_ban_enabled()
-            auto_ban_error_codes = get_auto_ban_error_codes()
-            log.debug(f"AUTO_BAN check: enabled={auto_ban_enabled}, status_code={status_code}, error_codes={auto_ban_error_codes}")
-            if auto_ban_enabled and status_code in auto_ban_error_codes:
-                if not cred_state.get("disabled", False):
-                    cred_state["disabled"] = True
-                    log.warning(f"AUTO_BAN: Disabled credential {os.path.basename(filename)} due to error {status_code}")
-                else:
-                    log.debug(f"Credential {os.path.basename(filename)} already disabled, error {status_code} recorded")
-            elif auto_ban_enabled:
-                log.debug(f"AUTO_BAN enabled but status_code {status_code} not in ban list {auto_ban_error_codes}")
-            else:
-                log.debug(f"AUTO_BAN disabled, status_code {status_code} recorded but no auto ban")
-            
-            self._state_dirty = True  # 标记状态已修改
-            await self._save_state()
-
-    async def record_success(self, filename: str, api_type: str = "other"):
-        """记录成功的API调用"""
-        async with self._lock:
-            # 使用相对路径进行状态管理
-            cred_state = self._get_cred_state(filename)
-            
-            # 只有聊天内容生成API成功才清除错误码，其他API不清除
-            if api_type == "chat_content":
-                cred_state["error_codes"] = []
-                log.debug(f"Cleared error codes for {filename} due to successful chat content generation")
-            
-            cred_state["last_success"] = datetime.now(timezone.utc).isoformat()
-            
-            self._state_dirty = True  # 标记状态已修改
-            await self._save_state()
-
-    async def fetch_user_email(self, filename: str) -> Optional[str]:
-        """获取凭证对应的用户邮箱地址"""
-        try:
-            # 加载凭证
-            creds, _ = await self._load_credentials_from_file(filename)
-            if not creds or not creds.token:
-                log.warning(f"无法加载凭证或获取访问令牌: {filename}")
-                return None
-            
-            # 刷新令牌如果需要
-            if creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(GoogleAuthRequest())
-                except Exception as e:
-                    log.warning(f"刷新凭证失败 {filename}: {e}")
-                    return None
-            
-            # 调用Google userinfo API获取邮箱
-            if not self._http_client:
-                log.warning("HTTP客户端未初始化")
-                return None
                 
-            headers = {
-                "Authorization": f"Bearer {creds.token}",
-                "Accept": "application/json"
-            }
-            
-            response = await self._http_client.get(
-                "https://openidconnect.googleapis.com/v1/userinfo",
-                headers=headers
-            )
-            
-            if response.status_code == 200:
-                user_info = response.json()
-                email = user_info.get("email")
-                if email:
-                    log.info(f"成功获取邮箱地址: {email} for {os.path.basename(filename)}")
-                    return email
-                else:
-                    log.warning(f"userinfo响应中没有邮箱信息: {user_info}")
-                    return None
-            else:
-                log.warning(f"获取用户信息失败 {filename}: HTTP {response.status_code} - {response.text}")
-                return None
+                # 重新发现凭证（热更新）
+                await self._discover_credentials()
                 
-        except Exception as e:
-            log.error(f"获取用户邮箱失败 {filename}: {e}")
-            return None
-
-    async def get_or_fetch_user_email(self, filename: str) -> Optional[str]:
-        """获取用户邮箱（优先使用缓存，如果没有则从API获取）"""
-        async with self._lock:
-            cred_state = self._get_cred_state(filename)
-            
-            # 检查是否已经有邮箱信息
-            if "user_email" in cred_state and cred_state["user_email"]:
-                return cred_state["user_email"]
-        
-        # 从API获取邮箱
-        email = await self.fetch_user_email(filename)
-        if email:
-            async with self._lock:
-                cred_state = self._get_cred_state(filename)
-                cred_state["user_email"] = email
-                self._state_dirty = True  # 标记状态已修改
-                await self._save_state()
-        
-        return email
-
-
-    def is_cred_disabled(self, filename: str) -> bool:
-        """检查凭证是否被禁用"""
-        cred_state = self._get_cred_state(filename)
-        return cred_state.get("disabled", False)
-
-    async def set_cred_disabled(self, filename: str, disabled: bool):
-        """设置凭证的禁用状态"""
-        async with self._lock:
-            relative_filename = _normalize_to_relative_path(filename)
-            log.info(f"Setting disabled={disabled} for file: {relative_filename}")
-            cred_state = self._get_cred_state(filename)
-            old_disabled = cred_state.get("disabled", False)
-            cred_state["disabled"] = disabled
-            log.info(f"Updated state for {relative_filename}: {cred_state}")
-            await self._save_state()
-            log.info(f"State saved successfully")
-            
-            # 如果状态发生了变化，强制重新发现文件并清空缓存
-            if old_disabled != disabled:
-                log.info(f"Credential disabled status changed from {old_disabled} to {disabled}, refreshing file list")
-                # 清空缓存，强制下次获取凭证时重新加载
-                self._cached_credentials = None
-                self._cached_project_id = None
-                self._cache_timestamp = 0
-                
-                # 立即重新发现文件以更新可用文件列表
-                await self._discover_credential_files()
-                log.info(f"File list refreshed. Available files: {len(self._credential_files)}")
-
-    def get_creds_status(self) -> Dict[str, Dict[str, Any]]:
-        """获取所有凭证的状态信息"""
-        status = {}
-        # 获取所有文件
-        credentials_dir = CREDENTIALS_DIR
-        patterns = [os.path.join(credentials_dir, "*.json")]
-        all_files = []
-        for pattern in patterns:
-            all_files.extend(glob.glob(pattern))
-        all_files = sorted(list(set(all_files)))
-        
-        for filename in all_files:
-            # 使用相对路径作为键，但返回时仍使用绝对路径（兼容前端）
-            absolute_filename = os.path.abspath(filename)
-            cred_state = self._get_cred_state(filename)
-            file_status = {
-                "error_codes": cred_state.get("error_codes", []),
-                "disabled": cred_state.get("disabled", False),
-                "last_success": cred_state.get("last_success"),
-                "user_email": cred_state.get("user_email")
-            }
-            status[absolute_filename] = file_status
-            
-            # 调试：记录特定文件的状态
-            basename = os.path.basename(filename)
-            if "atomic-affinity" in basename:
-                relative_filename = _normalize_to_relative_path(filename)
-                log.info(f"Status for {basename}: disabled={file_status['disabled']} (normalized: {relative_filename})")
-                
-        return status
-
-    def get_current_file_path(self) -> Optional[str]:
-        """获取当前使用的凭证文件路径"""
-        return self._current_file_path
-
-    async def _discover_credential_files(self):
-        """Discover all credential files with hot reload support."""
-        old_files = set(self._credential_files)
-        all_files = []
-        
-        # Discover from directory
-        credentials_dir = CREDENTIALS_DIR
-        patterns = [os.path.join(credentials_dir, "*.json")]
-        
-        for pattern in patterns:
-            discovered_files = glob.glob(pattern)
-            for file in discovered_files:
-                all_files.append(file)
-        
-        all_files = sorted(list(set(all_files)))
-        
-        # 过滤掉被禁用的文件（移除CD机制）
-        self._credential_files = []
-        for filename in all_files:
-            is_disabled = self.is_cred_disabled(filename)
-            
-            if not is_disabled:
-                self._credential_files.append(filename)
-            else:
-                # 记录被过滤的文件信息供调试
-                log.debug(f"Filtered out {os.path.basename(filename)}: disabled")
-        
-        new_files = set(self._credential_files)
-        
-        # 检测文件变化
-        if old_files != new_files:
-            added_files = new_files - old_files
-            removed_files = old_files - new_files
-            
-            if added_files:
-                log.info(f"发现新的可用凭证文件: {list(added_files)}")
-                # 清除缓存以便使用新文件
-                self._cached_credentials = None
-                self._cached_project_id = None
-            
-            if removed_files:
-                log.info(f"凭证文件已移除或不可用: {list(removed_files)}")
-                # 如果当前使用的文件被移除，切换到下一个文件
-                if self._credential_files and self._current_credential_index >= len(self._credential_files):
-                    self._current_credential_index = 0
-                    self._cached_credentials = None
-                    self._cached_project_id = None
-        
-        # 同步状态文件，清理不存在的文件状态
-        await self._sync_state_with_files(all_files)
-        
-        if not self._credential_files:
-            log.warning("No available credential files found")
-        else:
-            available_files = [os.path.basename(f) for f in self._credential_files]
-            log.info(f"Found {len(self._credential_files)} available credential files: {available_files}")
-
-    async def _sync_state_with_files(self, current_files: List[str]):
-        """同步状态文件与实际文件"""
-        # 标准化当前文件列表为相对路径
-        normalized_current_files = [_normalize_to_relative_path(f) for f in current_files]
-        
-        # 移除不存在文件的状态
-        files_to_remove = []
-        for filename in list(self._creds_state.keys()):
-            # 将状态文件中的键也标准化为相对路径进行比较
-            normalized_state_key = _normalize_to_relative_path(filename) if not filename.startswith('<ENV_') else filename
-            if normalized_state_key not in normalized_current_files:
-                files_to_remove.append(filename)
-        
-        if files_to_remove:
-            for filename in files_to_remove:
-                del self._creds_state[filename]
-            await self._save_state()
-            log.info(f"Removed state for deleted files: {files_to_remove}")
-
-    def _is_cache_valid(self) -> bool:
-        """Check if cached credentials are still valid based on call count, token expiration, and TTL."""
-        if not self._cached_credentials:
-            return False
-        
-        # 如果没有凭证文件，缓存无效
-        if not self._credential_files:
-            return False
-        
-        # 检查缓存TTL
-        current_time = time.time()
-        if current_time - self._cache_timestamp > self._cache_ttl:
-            return False
-        
-        # Check if we've reached the rotation threshold (use dynamic config)
-        current_calls_per_rotation = get_calls_per_rotation()
-        if self._call_count >= current_calls_per_rotation:
-            return False
-        
-        # Check token expiration (with 60 second buffer)
-        if self._cached_credentials.expired:
-            return False
-        
-        return True
-
-    async def _rotate_credential_if_needed(self):
-        """Rotate to next credential if call limit reached."""
-        current_calls_per_rotation = get_calls_per_rotation()
-        if self._call_count >= current_calls_per_rotation:
-            self._current_credential_index = (self._current_credential_index + 1) % len(self._credential_files)
-            self._call_count = 0  # Reset call counter
-            log.info(f"Rotated to credential index {self._current_credential_index}")
+            except asyncio.TimeoutError:
+                # 超时是正常的，继续下一轮
+                continue
+            except Exception as e:
+                log.error(f"Background worker error: {e}")
+                await asyncio.sleep(5)  # 错误后等待5秒再继续
     
-    async def _force_rotate_credential(self):
-        """Force rotate to next credential immediately (used for 429 errors)."""
-        if len(self._credential_files) <= 1:
-            log.warning("Only one credential available, cannot rotate")
-            return
-
-        old_index = self._current_credential_index
-        self._current_credential_index = (self._current_credential_index + 1) % len(self._credential_files)
-        self._call_count = 0  # Reset call counter
-
-        # 清理缓存状态以确保使用新凭证
-        self._cached_credentials = None
-        self._cached_project_id = None
-        self._current_file_path = None
-        self._cache_timestamp = 0
-
-        log.info(f"Force rotated from credential index {old_index} to {self._current_credential_index} due to 429 error")
-
-    async def _discover_credential_files_unlocked(self):
-        """在锁外进行文件发现操作（用于避免阻塞其他操作）"""
-        # 这个方法不使用锁，因为主要是文件系统读操作
-        # 文件列表的更新会在后续的 _discover_credential_files 中同步
-        
-        # 临时存储发现的文件
-        temp_files = []
-        
-        # 复制当前状态以避免并发修改问题
+    async def _discover_credentials(self):
+        """发现和加载所有可用凭证"""
         try:
-            # 检查文件系统中的凭证
-            if os.path.exists(CREDENTIALS_DIR):
-                json_pattern = os.path.join(CREDENTIALS_DIR, "*.json")
-                for filepath in glob.glob(json_pattern):
-                    # 检查禁用状态（内部使用相对路径），但文件列表保持绝对路径（供文件I/O使用）
-                    if not self.is_cred_disabled(filepath):
-                        temp_files.append(os.path.abspath(filepath))
+            # 从存储适配器获取所有凭证
+            all_credentials = await self._storage_adapter.list_credentials()
             
-            # 在锁内快速更新文件列表
-            async with self._lock:
-                if temp_files != self._credential_files:
-                    old_files = set(self._credential_files)
-                    self._credential_files = temp_files
-                    new_files = set(self._credential_files)
+            # 过滤出可用的凭证（排除被禁用的）- 批量读取状态以提升性能
+            available_credentials = []
+            
+            # 批量获取所有凭证状态，避免多次读取状态文件
+            if all_credentials:
+                try:
+                    all_states = await self._storage_adapter.get_all_credential_states()
                     
-                    # 日志记录变化
-                    if old_files != new_files:
-                        added_files = new_files - old_files
-                        removed_files = old_files - new_files
+                    for credential_name in all_credentials:
+                        normalized_name = credential_name
+                        # 标准化文件名以匹配状态数据中的键
+                        if hasattr(self._storage_adapter._backend, '_normalize_filename'):
+                            normalized_name = self._storage_adapter._backend._normalize_filename(credential_name)
                         
-                        if added_files:
-                            log.info(f"发现新的可用凭证文件: {list(added_files)}")
-                            # 清除缓存以便使用新文件
-                            self._cached_credentials = None
-                            self._cached_project_id = None
-                            self._cache_timestamp = 0
-                        
-                        if removed_files:
-                            log.info(f"移除不可用凭证文件: {list(removed_files)}")
-        
-        except Exception as e:
-            log.error(f"Error in _discover_credential_files_unlocked: {e}")
-            # 发生错误时，回退到带锁的方法
-            async with self._lock:
-                await self._discover_credential_files()
-
-    async def _load_credential_with_fallback(self, current_file: str) -> Tuple[Optional[Credentials], Optional[str]]:
-        """Load credentials with fallback to next file on failure."""
-        creds, project_id = await self._load_credentials_from_file(current_file)
-        if not creds:
-            # Try next file on failure
-            self._current_credential_index = (self._current_credential_index + 1) % len(self._credential_files)
-            if self._current_credential_index < len(self._credential_files):
-                current_file = self._credential_files[self._current_credential_index]
-                creds, project_id = await self._load_credentials_from_file(current_file)
-        return creds, project_id
-
-    async def get_credentials(self) -> Tuple[Optional[Credentials], Optional[str]]:
-        """Get credentials with call-based rotation, caching and hot reload for performance."""
-        # 第一阶段：快速检查缓存（减少锁持有时间）
-        async with self._lock:
-            current_calls_per_rotation = get_calls_per_rotation()
+                        state = all_states.get(normalized_name, {})
+                        if not state.get("disabled", False):
+                            available_credentials.append(credential_name)
+                except Exception as e:
+                    log.warning(f"Failed to batch load credential states, falling back to individual checks: {e}")
+                    # 如果批量读取失败，回退到逐个检查
+                    for credential_name in all_credentials:
+                        try:
+                            state = await self._storage_adapter.get_credential_state(credential_name)
+                            if not state.get("disabled", False):
+                                available_credentials.append(credential_name)
+                        except Exception as e2:
+                            log.warning(f"Failed to check state for credential {credential_name}: {e2}")
             
-            # 检查是否可以使用缓存，并验证当前文件是否仍然可用
-            if self._is_cache_valid() and self._credential_files:
-                # 额外检查：确保当前使用的文件没有被禁用
-                current_file_still_valid = (
-                    self._current_file_path and 
-                    not self.is_cred_disabled(self._current_file_path) and
-                    self._current_file_path in self._credential_files
-                )
+            # 更新凭证列表
+            old_credentials = set(self._credential_files)
+            new_credentials = set(available_credentials)
+            
+            if old_credentials != new_credentials:
+                # 记录变化（只在非初始状态时记录）
+                is_initial_load = len(old_credentials) == 0
+                added = new_credentials - old_credentials
+                removed = old_credentials - new_credentials
                 
-                if current_file_still_valid:
-                    log.debug(f"Using cached credentials (call count: {self._call_count}/{current_calls_per_rotation})")
-                    return self._cached_credentials, self._cached_project_id
-                else:
-                    log.info(f"Current credential file {self._current_file_path} is no longer valid, clearing cache")
-                    self._cached_credentials = None
-                    self._cached_project_id = None
-                    self._cache_timestamp = 0
-            
-            # 检查是否需要重新发现文件
-            current_time = time.time()
-            should_check_files = (
-                not self._credential_files or  # 无文件时每次都检查
-                self._call_count >= current_calls_per_rotation or  # 轮换时检查
-                not self._cached_credentials or  # 无缓存凭证时也检查（确保新文件能被及时发现）
-                current_time - self._last_file_scan_time > 30  # 每30秒至少扫描一次文件
-            )
-        
-        # 第二阶段：如果需要，在锁外进行文件发现（避免阻塞其他操作）
-        if should_check_files:
-            # 文件发现操作不需要锁，因为它主要是读操作
-            await self._discover_credential_files_unlocked()
-            # 更新扫描时间
-            async with self._lock:
-                self._last_file_scan_time = current_time
-        
-        # 第三阶段：获取凭证（持有锁但时间较短）
-        async with self._lock:
-            current_calls_per_rotation = get_calls_per_rotation()  # 重新获取配置
-            
-            # 再次检查缓存（可能在文件发现过程中被其他操作更新）
-            if self._is_cache_valid() and self._credential_files:
-                # 验证当前文件是否仍然可用
-                current_file_still_valid = (
-                    self._current_file_path and 
-                    not self.is_cred_disabled(self._current_file_path) and
-                    self._current_file_path in self._credential_files
-                )
+                self._credential_files = available_credentials
                 
-                if current_file_still_valid:
-                    log.debug(f"Using cached credentials after file discovery")
-                    return self._cached_credentials, self._cached_project_id
+                # 初始加载时只记录调试信息，运行时变化才记录INFO
+                if not is_initial_load:
+                    if added:
+                        log.info(f"发现新的可用凭证: {list(added)}")
+                    if removed:
+                        log.info(f"移除不可用凭证: {list(removed)}")
                 else:
-                    log.info(f"Current credential file {self._current_file_path} is no longer valid after file discovery, forcing reload")
-            
-            # 需要加载新凭证
-            if self._call_count >= current_calls_per_rotation:
-                log.info(f"Rotating credentials after {self._call_count} calls")
-            else:
-                log.info("Cache miss - loading fresh credentials")
-            
-            # 轮换凭证
-            await self._rotate_credential_if_needed()
+                    # 初始加载时只记录调试信息
+                    if available_credentials:
+                        log.debug(f"初始加载发现 {len(available_credentials)} 个可用凭证")
+                
+                # 重置当前索引如果需要
+                if self._current_credential_index >= len(self._credential_files):
+                    self._current_credential_index = 0
             
             if not self._credential_files:
-                log.error("No available credential files")
-                return None, None
-            
+                log.warning("No available credential files found")
+            else:
+                log.debug(f"Available credentials: {len(self._credential_files)} files")
+                
+        except Exception as e:
+            log.error(f"Failed to discover credentials: {e}")
+    
+    async def _load_current_credential(self) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """加载当前选中的凭证数据，包含token过期检测和自动刷新"""
+        if not self._credential_files:
+            return None
+        
+        try:
             current_file = self._credential_files[self._current_credential_index]
             
-            # 记录当前使用的文件路径
-            self._current_file_path = current_file
+            # 从存储适配器加载凭证数据
+            credential_data = await self._storage_adapter.get_credential(current_file)
+            if not credential_data:
+                log.error(f"Failed to load credential data for: {current_file}")
+                return None
             
-        # 第四阶段：在锁外加载凭证文件（避免I/O阻塞其他操作）
-        creds, project_id = await self._load_credential_with_fallback(current_file)
-        
-        # 第五阶段：更新缓存（短时间持有锁）
-        async with self._lock:
-            if creds:
-                self._cached_credentials = creds
-                self._cached_project_id = project_id
-                self._cache_timestamp = time.time()
-                log.debug(f"Loaded and cached credentials from {os.path.basename(current_file)}")
-            else:
-                log.error(f"Failed to load credentials from {current_file}")
-            
-            return creds, project_id
-
-    async def _load_credentials_from_file(self, file_path: str) -> Tuple[Optional[Credentials], Optional[str]]:
-        """Load credentials from file (optimized)."""
-        try:
-            async with aiofiles.open(file_path, "r") as f:
-                content = await f.read()
-            creds_data = json.loads(content)
-            
-            if "refresh_token" not in creds_data or not creds_data["refresh_token"]:
-                log.warning(f"No refresh token in {file_path}")
-                return None, None
-            
+            # 检查refresh_token
+            if "refresh_token" not in credential_data or not credential_data["refresh_token"]:
+                log.warning(f"No refresh token in {current_file}")
+                return None
+                
             # Auto-add 'type' field if missing but has required OAuth fields
-            if 'type' not in creds_data and all(key in creds_data for key in ['client_id', 'refresh_token']):
-                creds_data['type'] = 'authorized_user'
-                log.debug(f"Auto-added 'type' field to credential from file {file_path}")
+            if 'type' not in credential_data and all(key in credential_data for key in ['client_id', 'refresh_token']):
+                credential_data['type'] = 'authorized_user'
+                log.debug(f"Auto-added 'type' field to credential from file {current_file}")
             
-            # Handle different credential formats
-            if "access_token" in creds_data and "token" not in creds_data:
-                creds_data["token"] = creds_data["access_token"]
-            if "scope" in creds_data and "scopes" not in creds_data:
-                creds_data["scopes"] = creds_data["scope"].split()
+            # 兼容不同的token字段格式
+            if "access_token" in credential_data and "token" not in credential_data:
+                credential_data["token"] = credential_data["access_token"]
+            if "scope" in credential_data and "scopes" not in credential_data:
+                credential_data["scopes"] = credential_data["scope"].split()
             
-            # Handle expiry time format
-            if "expiry" in creds_data and isinstance(creds_data["expiry"], str):
-                try:
-                    exp = creds_data["expiry"]
-                    if "+00:00" in exp:
-                        parsed = datetime.fromisoformat(exp)
-                    elif exp.endswith("Z"):
-                        parsed = datetime.fromisoformat(exp.replace('Z', '+00:00'))
-                    else:
-                        parsed = datetime.fromisoformat(exp)
-                    ts = parsed.timestamp()
-                    creds_data["expiry"] = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                except Exception as e:
-                    log.warning(f"Could not parse expiry in {file_path}: {e}")
-                    del creds_data["expiry"]
+            # token过期检测和刷新
+            should_refresh = await self._should_refresh_token(credential_data)
             
-            creds = Credentials.from_authorized_user_info(creds_data, creds_data.get("scopes"))
-            project_id = creds_data.get("project_id")
-            setattr(creds, "project_id", project_id)
+            if should_refresh:
+                log.debug(f"Token需要刷新 - 文件: {current_file}")
+                refreshed_data = await self._refresh_token(credential_data, current_file)
+                if refreshed_data:
+                    credential_data = refreshed_data
+                    log.debug(f"Token刷新成功: {current_file}")
+                else:
+                    log.error(f"Token刷新失败: {current_file}")
+                    return None
             
-            # Refresh if needed (but only once per cache cycle)
-            if creds.expired and creds.refresh_token:
-                try:
-                    log.debug(f"Refreshing credentials from {file_path}")
-                    creds.refresh(GoogleAuthRequest())
-                except Exception as e:
-                    log.warning(f"Failed to refresh credentials from {file_path}: {e}")
+            # 加载状态信息
+            state_data = await self._storage_adapter.get_credential_state(current_file)
             
-            return creds, project_id
+            # 缓存当前凭证信息
+            self._current_credential_file = current_file
+            self._current_credential_data = credential_data
+            self._current_credential_state = state_data
+            
+            return current_file, credential_data
+            
         except Exception as e:
-            log.error(f"Failed to load credentials from {file_path}: {e}")
-            return None, None
-
-    async def increment_call_count(self):
-        """Increment the call count for tracking rotation."""
-        async with self._lock:
-            self._call_count += 1
-            current_calls_per_rotation = get_calls_per_rotation()
-            log.debug(f"Call count incremented to {self._call_count}/{current_calls_per_rotation}")
-
-    async def rotate_to_next_credential(self):
-        """Manually rotate to next credential (for error recovery)."""
-        async with self._lock:
-            # Invalidate cache
-            self._cached_credentials = None
-            self._cached_project_id = None
-            self._call_count = 0  # Reset call count
-            
-            # 重新发现可用凭证文件（过滤掉禁用的文件）
-            await self._discover_credential_files()
-            
-            # 如果没有可用凭证，早期返回
+            log.error(f"Error loading current credential: {e}")
+            return None
+    
+    async def get_valid_credential(self) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """获取有效的凭证，自动处理轮换和失效凭证切换"""
+        async with self._operation_lock:
             if not self._credential_files:
-                log.error("No available credentials to rotate to")
-                return
+                await self._discover_credentials()
+                if not self._credential_files:
+                    return None
             
-            # Move to next credential
-            self._current_credential_index = (self._current_credential_index + 1) % len(self._credential_files)
-            log.info(f"Rotated to credential index {self._current_credential_index}, total available: {len(self._credential_files)}")
+            # 检查是否需要轮换
+            if await self._should_rotate():
+                await self._rotate_credential()
             
-            # 记录当前使用的文件名称供调试
-            if self._credential_files:
-                current_file = self._credential_files[self._current_credential_index]
-                log.info(f"Now using credential: {os.path.basename(current_file)}")
-
-    def get_user_project_id(self, creds: Credentials) -> str:
-        """Get user project ID from credentials."""
-        project_id = getattr(creds, "project_id", None)
-        if project_id:
-            return project_id
-
-        raise Exception(
-            "Unable to determine Google Cloud project ID. "
-            "Ensure credential file contains project_id."
-        )
-
-    async def onboard_user(self, creds: Credentials, project_id: str):
-        """Optimized user onboarding with caching."""
-        # Skip if already onboarded for this session
-        if self._onboarding_complete:
+            # 尝试获取有效凭证，如果失败则自动切换
+            max_attempts = len(self._credential_files)  # 最多尝试所有凭证
+            
+            for attempt in range(max_attempts):
+                try:
+                    # 加载当前凭证
+                    result = await self._load_current_credential()
+                    if result:
+                        return result
+                    
+                    # 当前凭证加载失败，标记为失效并切换到下一个
+                    current_file = self._credential_files[self._current_credential_index] if self._credential_files else None
+                    if current_file:
+                        log.warning(f"凭证失效，自动禁用并切换: {current_file}")
+                        await self.set_cred_disabled(current_file, True)
+                        
+                        # 重新发现可用凭证（排除刚禁用的）
+                        await self._discover_credentials()
+                        if not self._credential_files:
+                            log.error("没有可用的凭证")
+                            return None
+                        
+                        # 重置索引到第一个可用凭证
+                        self._current_credential_index = 0
+                        log.info(f"切换到下一个可用凭证 (索引: {self._current_credential_index})")
+                    else:
+                        log.error("无法获取当前凭证文件名")
+                        break
+                        
+                except Exception as e:
+                    log.error(f"获取凭证时发生异常 (尝试 {attempt + 1}/{max_attempts}): {e}")
+                    if attempt < max_attempts - 1:
+                        # 切换到下一个凭证继续尝试
+                        await self._rotate_credential()
+                    continue
+            
+            log.error(f"所有 {max_attempts} 个凭证都尝试失败")
+            return None
+    
+    async def _should_rotate(self) -> bool:
+        """检查是否需要轮换凭证"""
+        if not self._credential_files or len(self._credential_files) <= 1:
+            return False
+        
+        current_calls_per_rotation = await get_calls_per_rotation()
+        return self._call_count >= current_calls_per_rotation
+    
+    async def _rotate_credential(self):
+        """轮换到下一个凭证"""
+        if len(self._credential_files) <= 1:
             return
         
-        async with self._lock:
-            # Double-check after acquiring lock
-            if self._onboarding_complete:
+        self._current_credential_index = (self._current_credential_index + 1) % len(self._credential_files)
+        self._call_count = 0
+        
+        log.info(f"Rotated to credential index {self._current_credential_index}")
+    
+    async def force_rotate_credential(self):
+        """强制轮换到下一个凭证（用于429错误处理）"""
+        async with self._operation_lock:
+            if len(self._credential_files) <= 1:
+                log.warning("Only one credential available, cannot rotate")
                 return
             
-            if creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(GoogleAuthRequest())
-                except Exception as e:
-                    raise Exception(f"Failed to refresh credentials during onboarding: {str(e)}")
+            await self._rotate_credential()
+            log.info("Forced credential rotation due to rate limit")
+    
+    def increment_call_count(self):
+        """增加调用计数"""
+        self._call_count += 1
+    
+    async def update_credential_state(self, credential_name: str, state_updates: Dict[str, Any]):
+        """更新凭证状态"""
+        try:
+            # 直接通过存储适配器更新状态
+            success = await self._storage_adapter.update_credential_state(credential_name, state_updates)
             
-            headers = {
-                "Authorization": f"Bearer {creds.token}",
-                "Content-Type": "application/json",
-                "User-Agent": get_user_agent(),
-            }
+            # 如果是当前使用的凭证，更新缓存
+            if credential_name == self._current_credential_file:
+                self._current_credential_state.update(state_updates)
             
-            load_assist_payload = {
-                "cloudaicompanionProject": project_id,
-                "metadata": get_client_metadata(project_id),
-            }
+            if success:
+                log.debug(f"Updated credential state: {credential_name}")
+            else:
+                log.warning(f"Failed to update credential state: {credential_name}")
+                
+            return success
+            
+        except Exception as e:
+            log.error(f"Error updating credential state {credential_name}: {e}")
+            return False
+    
+    async def set_cred_disabled(self, credential_name: str, disabled: bool):
+        """设置凭证的启用/禁用状态"""
+        try:
+            state_updates = {"disabled": disabled}
+            success = await self.update_credential_state(credential_name, state_updates)
+            
+            if success:
+                # 如果禁用了当前正在使用的凭证，需要重新发现可用凭证
+                if disabled and credential_name == self._current_credential_file:
+                    await self._discover_credentials()
+                    if self._credential_files:
+                        await self._rotate_credential()
+                
+                action = "disabled" if disabled else "enabled"
+                log.info(f"Credential {action}: {credential_name}")
+            
+            return success
+            
+        except Exception as e:
+            log.error(f"Error setting credential disabled state {credential_name}: {e}")
+            return False
+    
+    async def get_creds_status(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有凭证的状态"""
+        try:
+            # 从存储适配器获取所有状态
+            all_states = await self._storage_adapter.get_all_credential_states()
+            return all_states
+            
+        except Exception as e:
+            log.error(f"Error getting credential statuses: {e}")
+            return {}
+    
+    async def get_or_fetch_user_email(self, credential_name: str) -> Optional[str]:
+        """获取或获取用户邮箱地址"""
+        try:
+            # 首先检查缓存的状态
+            state = await self._storage_adapter.get_credential_state(credential_name)
+            cached_email = state.get("user_email")
+            
+            if cached_email:
+                return cached_email
+            
+            # 如果没有缓存，从凭证数据获取
+            credential_data = await self._storage_adapter.get_credential(credential_name)
+            if not credential_data:
+                return None
+            
+            # 尝试获取邮箱
+            email = await fetch_user_email_from_file(credential_data)
+            
+            if email:
+                # 缓存邮箱地址
+                await self.update_credential_state(credential_name, {"user_email": email})
+                return email
+            
+            return None
+            
+        except Exception as e:
+            log.error(f"Error fetching user email for {credential_name}: {e}")
+            return None
+    
+    async def record_api_call_result(self, credential_name: str, success: bool, error_code: Optional[int] = None):
+        """记录API调用结果"""
+        try:
+            state_updates = {}
+            
+            if success:
+                state_updates["last_success"] = time.time()
+                # 清除错误码（如果之前有的话）
+                state_updates["error_codes"] = []
+            elif error_code:
+                # 记录错误码
+                current_state = await self._storage_adapter.get_credential_state(credential_name)
+                error_codes = current_state.get("error_codes", [])
+                
+                if error_code not in error_codes:
+                    error_codes.append(error_code)
+                    # 限制错误码列表长度
+                    if len(error_codes) > 10:
+                        error_codes = error_codes[-10:]
+                    
+                state_updates["error_codes"] = error_codes
+            
+            if state_updates:
+                await self.update_credential_state(credential_name, state_updates)
+                
+        except Exception as e:
+            log.error(f"Error recording API call result for {credential_name}: {e}")
+    
+    # 原子操作支持
+    @asynccontextmanager
+    async def _atomic_operation(self, operation_name: str):
+        """原子操作上下文管理器"""
+        async with self._atomic_lock:
+            self._atomic_counter += 1
+            operation_id = self._atomic_counter
+            log.debug(f"开始原子操作[{operation_id}]: {operation_name}")
             
             try:
-                # Use reusable HTTP client
-                resp = await self._http_client.post(
-                    f"{CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist",
-                    json=load_assist_payload,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                load_data = resp.json()
-                
-                # Determine tier
-                tier = None
-                if load_data.get("currentTier"):
-                    tier = load_data["currentTier"]
-                else:
-                    for allowed_tier in load_data.get("allowedTiers", []):
-                        if allowed_tier.get("isDefault"):
-                            tier = allowed_tier
-                            break
-                    
-                    if not tier:
-                        tier = {
-                            "name": "",
-                            "description": "",
-                            "id": "legacy-tier",
-                            "userDefinedCloudaicompanionProject": True,
-                        }
-
-                if tier.get("userDefinedCloudaicompanionProject") and not project_id:
-                    raise ValueError("This account requires setting the GOOGLE_CLOUD_PROJECT env var.")
-
-                if load_data.get("currentTier"):
-                    self._onboarding_complete = True
-                    return
-
-                # Onboard user
-                onboard_req_payload = {
-                    "tierId": tier.get("id"),
-                    "cloudaicompanionProject": project_id,
-                    "metadata": get_client_metadata(project_id),
-                }
-
-                while True:
-                    onboard_resp = await self._http_client.post(
-                        f"{CODE_ASSIST_ENDPOINT}/v1internal:onboardUser",
-                        json=onboard_req_payload,
-                        headers=headers,
-                    )
-                    onboard_resp.raise_for_status()
-                    lro_data = onboard_resp.json()
-
-                    if lro_data.get("done"):
-                        self._onboarding_complete = True
-                        break
-                    
-                    await asyncio.sleep(5)
-
-            except httpx.HTTPStatusError as e:
-                error_text = e.response.text if hasattr(e, 'response') else str(e)
-                raise Exception(f"User onboarding failed. Please check your Google Cloud project permissions and try again. Error: {error_text}")
+                yield operation_id
+                log.debug(f"完成原子操作[{operation_id}]: {operation_name}")
             except Exception as e:
-                raise Exception(f"User onboarding failed due to an unexpected error: {str(e)}")
-
-    async def force_refresh_credential_files(self):
-        """强制刷新凭证文件列表，用于检测新添加的凭证文件"""
-        if not self._initialized:
-            await self.initialize()
-        
-        log.info("Forcing credential files refresh")
-        async with self._lock:
-            # 清除缓存，强制重新加载
-            self._cached_credentials = None
-            self._cached_project_id = None
-            self._cache_timestamp = 0
+                log.error(f"原子操作[{operation_id}]失败: {operation_name} - {e}")
+                raise
+    
+    async def _should_refresh_token(self, credential_data: Dict[str, Any]) -> bool:
+        """检查token是否需要刷新"""
+        try:
+            # 如果没有access_token或过期时间，需要刷新
+            if not credential_data.get("access_token") and not credential_data.get("token"):
+                log.debug("没有access_token，需要刷新")
+                return True
+                
+            expiry_str = credential_data.get("expiry")
+            if not expiry_str:
+                log.debug("没有过期时间，需要刷新")
+                return True
+                
+            # 解析过期时间
+            try:
+                if isinstance(expiry_str, str):
+                    if "+" in expiry_str:
+                        file_expiry = datetime.fromisoformat(expiry_str)
+                    elif expiry_str.endswith("Z"):
+                        file_expiry = datetime.fromisoformat(expiry_str.replace('Z', '+00:00'))
+                    else:
+                        file_expiry = datetime.fromisoformat(expiry_str)
+                else:
+                    log.debug("过期时间格式无效，需要刷新")
+                    return True
+                    
+                # 确保时区信息
+                if file_expiry.tzinfo is None:
+                    file_expiry = file_expiry.replace(tzinfo=timezone.utc)
+                    
+                # 检查是否还有至少5分钟有效期
+                now = datetime.now(timezone.utc)
+                time_left = (file_expiry - now).total_seconds()
+                
+                log.debug(f"Token剩余时间: {int(time_left/60)}分钟")
+                
+                if time_left > 300:  # 5分钟缓冲
+                    return False
+                else:
+                    log.debug(f"Token即将过期（剩余{int(time_left/60)}分钟），需要刷新")
+                    return True
+                    
+            except Exception as e:
+                log.warning(f"解析过期时间失败: {e}，需要刷新")
+                return True
+                
+        except Exception as e:
+            log.error(f"检查token过期时出错: {e}")
+            return True
+    
+    async def _refresh_token(self, credential_data: Dict[str, Any], filename: str) -> Optional[Dict[str, Any]]:
+        """刷新token并更新存储"""
+        try:
+            # 创建Credentials对象
+            creds = Credentials.from_dict(credential_data)
             
-            # 重新发现凭证文件
-            await self._discover_credential_files()
+            # 检查是否可以刷新
+            if not creds.refresh_token:
+                log.error(f"没有refresh_token，无法刷新: {filename}")
+                return None
+                
+            # 刷新token
+            log.debug(f"正在刷新token: {filename}")
+            await creds.refresh()
+            
+            # 更新凭证数据
+            if creds.access_token:
+                credential_data["access_token"] = creds.access_token
+                # 保持兼容性
+                credential_data["token"] = creds.access_token
+                
+            if creds.expires_at:
+                credential_data["expiry"] = creds.expires_at.isoformat()
+                
+            # 保存到存储
+            await self._storage_adapter.store_credential(filename, credential_data)
+            log.info(f"Token刷新成功并已保存: {filename}")
+            
+            return credential_data
+            
+        except Exception as e:
+            error_msg = str(e)
+            log.error(f"Token刷新失败 {filename}: {error_msg}")
+            
+            # 检查是否是凭证永久失效的错误
+            is_permanent_failure = self._is_permanent_refresh_failure(error_msg)
+            
+            if is_permanent_failure:
+                log.warning(f"检测到凭证永久失效: {filename}")
+                # 记录失效状态，但不在这里禁用凭证，让上层调用者处理
+                await self.record_api_call_result(filename, False, 400)
+            
+            return None
+    
+    def _is_permanent_refresh_failure(self, error_msg: str) -> bool:
+        """判断是否是凭证永久失效的错误"""
+        # 常见的永久失效错误模式
+        permanent_error_patterns = [
+            "400 Bad Request",
+            "invalid_grant",
+            "refresh_token_expired", 
+            "invalid_refresh_token",
+            "unauthorized_client",
+            "access_denied"
+        ]
+        
+        error_msg_lower = error_msg.lower()
+        for pattern in permanent_error_patterns:
+            if pattern.lower() in error_msg_lower:
+                return True
+                
+        return False
 
-    async def get_credentials_and_project(self) -> Tuple[Optional[Credentials], Optional[str]]:
-        """Get both credentials and project ID in one optimized call."""
-        if not self._initialized:
-            await self.initialize()
-        
-        # 如果当前没有文件，强制检查一次
-        if not self._credential_files:
-            log.info("No credentials found, forcing file discovery")
-            async with self._lock:
-                await self._discover_credential_files()
-        
-        return await self.get_credentials()
+    # 兼容性方法 - 保持与现有代码的接口兼容
+    async def _update_token_in_file(self, file_path: str, new_token: str, expires_at=None):
+        """更新凭证令牌（兼容性方法）"""
+        try:
+            credential_data = await self._storage_adapter.get_credential(file_path)
+            if not credential_data:
+                log.error(f"Credential not found for token update: {file_path}")
+                return False
+            
+            # 更新令牌数据
+            credential_data["token"] = new_token
+            if expires_at:
+                credential_data["expiry"] = expires_at.isoformat() if hasattr(expires_at, 'isoformat') else expires_at
+            
+            # 保存更新后的凭证
+            success = await self._storage_adapter.store_credential(file_path, credential_data)
+            
+            if success:
+                log.debug(f"Token updated for credential: {file_path}")
+            else:
+                log.error(f"Failed to update token for credential: {file_path}")
+            
+            return success
+            
+        except Exception as e:
+            log.error(f"Error updating token for {file_path}: {e}")
+            return False
+
+
+# 全局实例管理（保持兼容性）
+_credential_manager: Optional[CredentialManager] = None
+
+async def get_credential_manager() -> CredentialManager:
+    """获取全局凭证管理器实例"""
+    global _credential_manager
+    
+    if _credential_manager is None:
+        _credential_manager = CredentialManager()
+        await _credential_manager.initialize()
+    
+    return _credential_manager

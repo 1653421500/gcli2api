@@ -2,10 +2,12 @@ fastapi
 httpx[socks]
 pydantic
 python-dotenv
-google-auth
-google-auth-oauthlib
 hypercorn
 aiofiles
 python-multipart
 toml
-psutil
+PyJWT
+oauthlib
+motor
+redis
+asyncpg

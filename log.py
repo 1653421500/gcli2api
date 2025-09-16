@@ -1,29 +1,10 @@
 """
-日志模块 - 支持从配置获取日志级别并实时输出到文件
+日志模块 - 使用环境变量配置
 """
+import os
 import sys
 import threading
 from datetime import datetime
-
-# 延迟导入配置，避免循环导入
-_config_imported = False
-_get_log_level = None
-_get_log_file = None
-
-def _import_config():
-    """延迟导入配置函数"""
-    global _config_imported, _get_log_level, _get_log_file
-    if not _config_imported:
-        try:
-            from config import get_log_level, get_log_file
-            _get_log_level = get_log_level
-            _get_log_file = get_log_file
-            _config_imported = True
-        except ImportError:
-            # 如果配置模块不可用，使用默认值
-            _get_log_level = lambda: "info"
-            _get_log_file = lambda: "log.txt"
-            _config_imported = True
 
 # 日志级别定义
 LOG_LEVELS = {
@@ -37,33 +18,41 @@ LOG_LEVELS = {
 # 线程锁，用于文件写入同步
 _file_lock = threading.Lock()
 
+# 文件写入状态标志
+_file_writing_disabled = False
+_disable_reason = None
+
 def _get_current_log_level():
     """获取当前日志级别"""
-    _import_config()
-    try:
-        level = _get_log_level().lower()
-        return LOG_LEVELS.get(level, LOG_LEVELS['info'])
-    except:
-        return LOG_LEVELS['info']
+    level = os.getenv('LOG_LEVEL', 'info').lower()
+    return LOG_LEVELS.get(level, LOG_LEVELS['info'])
 
 def _get_log_file_path():
     """获取日志文件路径"""
-    _import_config()
-    try:
-        return _get_log_file()
-    except:
-        return "log.txt"
+    return os.getenv('LOG_FILE', 'log.txt')
 
 def _write_to_file(message: str):
     """线程安全地写入日志文件"""
+    global _file_writing_disabled, _disable_reason
+    
+    # 如果文件写入已被禁用，直接返回
+    if _file_writing_disabled:
+        return
+    
     try:
         log_file = _get_log_file_path()
         with _file_lock:
             with open(log_file, 'a', encoding='utf-8') as f:
                 f.write(message + '\n')
                 f.flush()  # 强制刷新到磁盘，确保实时写入
+    except (PermissionError, OSError, IOError) as e:
+        # 检测只读文件系统或权限问题，禁用文件写入
+        _file_writing_disabled = True
+        _disable_reason = str(e)
+        print(f"Warning: File system appears to be read-only or permission denied. Disabling log file writing: {e}", file=sys.stderr)
+        print(f"Log messages will continue to display in console only.", file=sys.stderr)
     except Exception as e:
-        # 如果写文件失败，至少输出到控制台
+        # 其他异常仍然输出警告但不禁用写入（可能是临时问题）
         print(f"Warning: Failed to write to log file: {e}", file=sys.stderr)
 
 def _log(level: str, message: str):
@@ -94,14 +83,13 @@ def _log(level: str, message: str):
     _write_to_file(entry)
 
 def set_log_level(level: str):
-    """设置日志级别（注意：这只影响当前会话，不会持久化到配置）"""
+    """设置日志级别提示"""
     level = level.lower()
     if level not in LOG_LEVELS:
         print(f"Warning: Unknown log level '{level}'. Valid levels: {', '.join(LOG_LEVELS.keys())}")
         return False
     
-    # 这里可以考虑动态更新配置，但目前只提供警告
-    print(f"Note: To persist log level '{level}', please set LOG_LEVEL environment variable or update config.toml")
+    print(f"Note: To set log level '{level}', please set LOG_LEVEL environment variable")
     return True
 
 class Logger:
@@ -142,9 +130,14 @@ class Logger:
     def get_log_file(self) -> str:
         """获取当前日志文件路径"""
         return _get_log_file_path()
+    
 
 # 导出全局日志实例
 log = Logger()
 
-# 为了向后兼容，也导出日志级别设置函数
+# 导出的公共接口
 __all__ = ['log', 'set_log_level', 'LOG_LEVELS']
+
+# 使用说明:
+# 1. 设置日志级别: export LOG_LEVEL=debug (或在.env文件中设置)
+# 2. 设置日志文件: export LOG_FILE=log.txt (或在.env文件中设置)
