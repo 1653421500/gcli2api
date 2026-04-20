@@ -1,190 +1,17 @@
 # GeminiCLI to API
 
-**Convert GeminiCLI to OpenAI and GEMINI API interfaces**
+**Convert GeminiCLI and Antigravity to OpenAI, GEMINI, and Claude API Compatible Interfaces**
 
-[![CI](https://github.com/su-kaka/gcli2api/workflows/CI/badge.svg)](https://github.com/su-kaka/gcli2api/actions)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](../LICENSE)
 [![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/su-kaka/gcli2api/pkgs/container/gcli2api)
 
-[中文](../README.md) | English
+[中文](../README.md) | English | [日本語](./README_JA.md)
 
 ## 🚀 Quick Deploy
 
-[![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/templates/97VMEF?referralCode=su-kaka)
----
-
-## ⚠️ License Declaration
-
-**This project is licensed under the Cooperative Non-Commercial License (CNC-1.0)**
-
-This is a strict anti-commercial open source license. Please refer to the [LICENSE](../LICENSE) file for details.
-
-### ✅ Permitted Uses:
-- Personal learning, research, and educational purposes
-- Non-profit organization use
-- Open source project integration (must comply with the same license)
-- Academic research and publication
-
-### ❌ Prohibited Uses:
-- Any form of commercial use
-- Enterprise use with annual revenue exceeding $1 million
-- Venture capital-backed or publicly traded companies
-- Providing paid services or products
-- Commercial competitive use
-
----
-
-## Core Features
-
-### 🔄 API Endpoints and Format Support
-
-**Multi-endpoint Dual Format Support**
-- **OpenAI Compatible Endpoints**: `/v1/chat/completions` and `/v1/models`
-  - Supports standard OpenAI format (messages structure)
-  - Supports Gemini native format (contents structure)
-  - Automatic format detection and conversion, no manual switching required
-  - Supports multimodal input (text + images)
-- **Gemini Native Endpoints**: `/v1/models/{model}:generateContent` and `streamGenerateContent`
-  - Supports complete Gemini native API specifications
-  - Multiple authentication methods: Bearer Token, x-goog-api-key header, URL parameter key
-
-### 🔐 Authentication and Security Management
-
-**Flexible Password Management**
-- **Separate Password Support**: API password (chat endpoints) and control panel password can be set independently
-- **Multiple Authentication Methods**: Supports Authorization Bearer, x-goog-api-key header, URL parameters, etc.
-- **JWT Token Authentication**: Control panel supports JWT token authentication
-- **User Email Retrieval**: Automatically retrieves and displays Google account email addresses
-
-### 📊 Intelligent Credential Management System
-
-**Advanced Credential Management**
-- Multiple Google OAuth credential automatic rotation
-- Enhanced stability through redundant authentication
-- Load balancing and concurrent request support
-- Automatic failure detection and credential disabling
-- Credential usage statistics and quota management
-- Support for manual enable/disable credential files
-- Batch credential file operations (enable, disable, delete)
-
-**Credential Status Monitoring**
-- Real-time credential health checks
-- Error code tracking (429, 403, 500, etc.)
-- Automatic banning mechanism (configurable)
-- Credential rotation strategy (based on call count)
-- Usage statistics and quota monitoring
-
-### 🌊 Streaming and Response Processing
-
-**Multiple Streaming Support**
-- True real-time streaming responses
-- Fake streaming mode (for compatibility)
-- Streaming anti-truncation feature (prevents answer truncation)
-- Asynchronous task management and timeout handling
-
-**Response Optimization**
-- Thinking chain content separation
-- Reasoning process (reasoning_content) handling
-- Multi-turn conversation context management
-- Compatibility mode (converts system messages to user messages)
-
-### 🎛️ Web Management Console
-
-**Full-featured Web Interface**
-- OAuth authentication flow management
-- Credential file upload, download, and management
-- Real-time log viewing (WebSocket)
-- System configuration management
-- Usage statistics and monitoring dashboard
-- Mobile-friendly interface
-
-**Batch Operation Support**
-- ZIP file batch credential upload
-- Batch enable/disable/delete credentials
-- Batch user email retrieval
-- Batch configuration management
-
-### 📈 Usage Statistics and Monitoring
-
-**Detailed Usage Statistics**
-- Call count statistics by credential file
-- Gemini 2.5 Pro model specific statistics
-- Daily quota management (UTC+7 reset)
-- Aggregated statistics and analysis
-- Custom daily limit configuration
-
-**Real-time Monitoring**
-- WebSocket real-time log streams
-- System status monitoring
-- Credential health status
-- API call success rate statistics
-
-### 🔧 Advanced Configuration and Customization
-
-**Network and Proxy Configuration**
-- HTTP/HTTPS proxy support
-- Proxy endpoint configuration (OAuth, Google APIs, metadata service)
-- Timeout and retry configuration
-- Network error handling and recovery
-
-**Performance and Stability Configuration**
-- 429 error automatic retry (configurable interval and attempts)
-- Anti-truncation maximum retry attempts
-- Credential rotation strategy
-- Concurrent request management
-
-**Logging and Debugging**
-- Multi-level logging system (DEBUG, INFO, WARNING, ERROR)
-- Log file management
-- Real-time log streams
-- Log download and clearing
-
-### 🔄 Environment Variables and Configuration Management
-
-**Flexible Configuration Methods**
-- TOML configuration file support
-- Environment variable configuration
-- Hot configuration updates (partial configuration items)
-- Configuration locking (environment variable priority)
-
-**Environment Variable Credential Support**
-- `GCLI_CREDS_*` format environment variable import
-- Automatic loading of environment variable credentials
-- Base64 encoded credential support
-- Docker container friendly
-
-## Supported Models
-
-All models have 1M context window capacity. Each credential file provides 1000 request quota.
-
-### 🤖 Base Models
-- `gemini-2.5-pro`
-- `gemini-2.5-pro-preview-06-05`  
-- `gemini-2.5-pro-preview-05-06`
-
-### 🧠 Thinking Models
-- `gemini-2.5-pro-maxthinking`: Maximum thinking budget mode
-- `gemini-2.5-pro-nothinking`: No thinking mode
-- Supports custom thinking budget configuration
-- Automatic separation of thinking content and final answers
-
-### 🔍 Search-Enhanced Models
-- `gemini-2.5-pro-search`: Model with integrated search functionality
-
-### 🌊 Special Feature Variants
-- **Fake Streaming Mode**: Add `-假流式` suffix to any model name
-  - Example: `gemini-2.5-pro-假流式`
-  - For scenarios requiring streaming responses but server doesn't support true streaming
-- **Streaming Anti-truncation Mode**: Add `流式抗截断/` prefix to model name
-  - Example: `流式抗截断/gemini-2.5-pro`  
-  - Automatically detects response truncation and retries to ensure complete answers
-
-### 🔧 Automatic Model Feature Detection
-- System automatically recognizes feature identifiers in model names
-- Transparently handles feature mode transitions
-- Supports feature combination usage
-
+[![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/templates/97VMEF?referralCode=sukaka)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/su-kaka/gcli2api)
 ---
 
 ## Installation Guide
@@ -225,6 +52,19 @@ cd gcli2api
 bash start.sh
 ```
 
+### macOS Environment
+
+**Initial Installation**
+```bash
+curl -o darwin-install.sh "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
+```
+
+**Restart Service**
+```bash
+cd gcli2api
+bash start.sh
+```
+
 ### Docker Environment
 
 **Docker Run Command**
@@ -234,6 +74,32 @@ docker run -d --name gcli2api --network host -e PASSWORD=pwd -e PORT=7861 -v $(p
 
 # Using separate passwords
 docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds ghcr.io/su-kaka/gcli2api:latest
+```
+
+**Docker Mac**
+```bash
+# Using universal password
+docker run -d \
+  --name gcli2api \
+  -p 7861:7861 \
+  -p 8080:8080 \
+  -e PASSWORD=pwd \
+  -e PORT=7861 \
+  -v "$(pwd)/data/creds":/app/creds \
+  ghcr.io/su-kaka/gcli2api:latest
+```
+
+```bash
+# Using separate passwords
+docker run -d \
+--name gcli2api \
+-p 7861:7861 \
+-p 8080:8080 \
+-e API_PASSWORD=api_pwd \
+-e PANEL_PASSWORD=panel_pwd \
+-e PORT=7861 \
+-v $(pwd)/data/creds:/app/creds \
+ghcr.io/su-kaka/gcli2api:latest
 ```
 
 **Docker Compose Run Command**
@@ -268,20 +134,174 @@ docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PA
     docker-compose up -d
     ```
 
----
+## Core Features
 
-## ⚠️ Important Notes
+### 🔄 API Endpoints and Format Support
 
-- The current OAuth authentication process **only supports localhost access**, meaning authentication must be completed through `http://127.0.0.1:7861/auth` (default port 7861, modifiable via PORT environment variable).
-- **For deployment on cloud servers or other remote environments, please first run the service locally and complete OAuth authentication to obtain the generated json credential files (located in the `./geminicli/creds` directory), then upload these files via the auth panel.**
-- **Please strictly comply with usage restrictions, only for personal learning and non-commercial purposes**
+**Multi-endpoint Multi-format Support**
+- **OpenAI Compatible Endpoints**: `/v1/chat/completions` and `/v1/models`
+  - Supports standard OpenAI format (messages structure)
+  - Supports Gemini native format (contents structure)
+  - Automatic format detection and conversion, no manual switching required
+  - Supports multimodal input (text + images)
+- **Gemini Native Endpoints**: `/v1/models/{model}:generateContent` and `streamGenerateContent`
+  - Supports complete Gemini native API specifications
+  - Multiple authentication methods: Bearer Token, x-goog-api-key header, URL parameter key
+- **Claude Format Compatibility**: Full support for Claude API format
+  - Endpoint: `/v1/messages` (follows Claude API specification)
+  - Supports Claude standard messages format
+  - Supports system parameter and Claude-specific features
+  - Automatically converts to backend-supported format
+- **Antigravity API Support**: Supports OpenAI, Gemini, and Claude formats
+  - OpenAI format endpoint: `/antigravity/v1/chat/completions`
+  - Gemini format endpoint: `/antigravity/v1/models/{model}:generateContent` and `streamGenerateContent`
+  - Claude format endpoint: `/antigravity/v1/messages`
+  - Supports all Antigravity models (Claude, Gemini, etc.)
+  - Automatic model name mapping and thinking mode detection
+
+### 🔐 Authentication and Security Management
+
+**Flexible Password Management**
+- **Separate Password Support**: API password (chat endpoints) and control panel password can be set independently
+- **Multiple Authentication Methods**: Supports Authorization Bearer, x-goog-api-key header, URL parameters, etc.
+- **JWT Token Authentication**: Control panel supports JWT token authentication
+- **User Email Retrieval**: Automatically retrieves and displays Google account email addresses
+
+### 📊 Intelligent Credential Management System
+
+**Advanced Credential Management**
+- Multiple Google OAuth credential automatic rotation
+- Enhanced stability through redundant authentication
+- Load balancing and concurrent request support
+- Automatic failure detection and credential disabling
+- Credential usage statistics and quota management
+- Support for manual enable/disable credential files
+- Batch credential file operations (enable, disable, delete)
+
+**Credential Status Monitoring**
+- Real-time credential health checks
+- Error code tracking (429, 403, 500, etc.)
+- Automatic banning mechanism (configurable)
+
+### 🌊 Streaming and Response Processing
+
+**Multiple Streaming Support**
+- True real-time streaming responses
+- Fake streaming mode (for compatibility)
+- Streaming anti-truncation feature (prevents answer truncation)
+- Asynchronous task management and timeout handling
+
+**Response Optimization**
+- Thinking chain content separation
+- Reasoning process (reasoning_content) handling
+- Multi-turn conversation context management
+- Compatibility mode (converts system messages to user messages)
+
+### 🎛️ Web Management Console
+
+**Full-featured Web Interface**
+- OAuth authentication flow management (supports GCLI and Antigravity dual modes)
+- Credential file upload, download, and management
+- Real-time log viewing (WebSocket)
+- System configuration management
+- Usage statistics and monitoring dashboard
+- Mobile-friendly interface
+
+**Batch Operation Support**
+- ZIP file batch credential upload (GCLI and Antigravity)
+- Batch enable/disable/delete credentials
+- Batch user email retrieval
+- Batch configuration management
+- Unified batch upload interface for all credential types
+
+### 📈 Usage Monitoring
+
+**Real-time Monitoring**
+- WebSocket real-time log streams
+- System status monitoring
+- Credential health status
+
+### 🔧 Advanced Configuration and Customization
+
+**Network and Proxy Configuration**
+- HTTP/HTTPS proxy support
+- Proxy endpoint configuration (OAuth, Google APIs, metadata service)
+- Timeout and retry configuration
+- Network error handling and recovery
+
+**Performance and Stability Configuration**
+- 429 error automatic retry (configurable interval and attempts)
+- Anti-truncation maximum retry attempts
+
+**Logging and Debugging**
+- Multi-level logging system (DEBUG, INFO, WARNING, ERROR)
+- Log file management
+- Real-time log streams
+- Log download and clearing
+
+### 🔄 Environment Variables and Configuration Management
+
+**Flexible Configuration Methods**
+- Environment variable configuration
+- Hot configuration updates (partial configuration items)
+- Configuration locking (environment variable priority)
+
+## Supported Models
+
+All models have 1M context window capacity. Each credential file provides 1000 request quota.
+
+### 🤖 Base Models
+- `gemini-2.5-pro`
+- `gemini-3-pro-preview`
+- `gemini-3.1-pro-preview`
+
+### 🧠 Thinking Models
+- `gemini-2.5-pro-high`: Thinking mode
+- `gemini-2.5-pro-low`: Low thinking mode
+- Supports custom thinking budget configuration
+- Automatic separation of thinking content and final answers
+
+### 🔍 Search-Enhanced Models
+- `gemini-2.5-pro-search`: Model with integrated search functionality
+
+### 🖼️ Image Generation Models (Antigravity)
+- `gemini-3.1-flash-image`: Base image generation model
+- **Resolution Suffixes**:
+  - `-2k`: 2K resolution
+  - `-4k`: 4K HD resolution
+- **Aspect Ratio Suffixes**:
+  - `-1x1`: Square (avatar)
+  - `-16x9`: Landscape (desktop wallpaper)
+  - `-9x16`: Portrait (mobile wallpaper)
+  - `-21x9`: Ultra-wide (ultrawide monitor)
+  - `-4x3`: Traditional display
+  - `-3x4`: Portrait poster
+- **Combination Examples**:
+  - `gemini-3.1-flash-image-4k-16x9`: 4K landscape
+  - `gemini-3.1-flash-image-2k-9x16`: 2K portrait
+- When no ratio is specified, the API automatically decides the aspect ratio
+
+### 🌊 Special Feature Variants
+- **Fake Streaming Mode**: Add `-假流式` suffix to any model name
+  - Example: `gemini-2.5-pro-假流式`
+  - For scenarios requiring streaming responses but server doesn't support true streaming
+- **Streaming Anti-truncation Mode**: Add `流式抗截断/` prefix to model name
+  - Example: `流式抗截断/gemini-2.5-pro`
+  - Automatically detects response truncation and retries to ensure complete answers
+
+### 🔧 Automatic Model Feature Detection
+- System automatically recognizes feature identifiers in model names
+- Transparently handles feature mode transitions
+- Supports feature combination usage
 
 ---
 
 ## Configuration Instructions
 
-1. Visit `http://127.0.0.1:7861/auth` (default port, modifiable via PORT environment variable)
+1. Visit `http://127.0.0.1:7861` (default port, modifiable via PORT environment variable)
 2. Complete OAuth authentication flow (default password: `pwd`, modifiable via environment variables)
+   - **GCLI Mode**: For obtaining Google Cloud Gemini API credentials
+   - **Antigravity Mode**: For obtaining Google Antigravity API credentials
 3. Configure client:
 
 **OpenAI Compatible Client:**
@@ -292,66 +312,47 @@ docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PA
    - **Endpoint Address**: `http://127.0.0.1:7861`
    - **Authentication Methods**:
      - `Authorization: Bearer your_api_password`
-     - `x-goog-api-key: your_api_password` 
+     - `x-goog-api-key: your_api_password`
      - URL parameter: `?key=your_api_password`
 
-## 💾 Distributed Storage Mode
+### 🌟 Dual Authentication Mode Support
 
-### 🌟 Storage Backend Priority
+**GCLI Authentication Mode**
+- Standard Google Cloud Gemini API authentication
+- Supports OAuth2.0 authentication flow
+- Automatically enables required Google Cloud APIs
 
-gcli2api supports multiple storage backends, automatically selecting by priority: **Redis > Postgres > MongoDB > Local Files**
+**Antigravity Authentication Mode**
+- Dedicated authentication for Google Antigravity API
+- Independent credential management system
+- Supports batch upload and management
+- Completely isolated from GCLI credentials
 
-### ⚡ Redis Distributed Storage Mode
+**Unified Management Interface**
+- Manage both credential types in the "Batch Upload" tab
+- Upper section: GCLI credential batch upload (blue theme)
+- Lower section: Antigravity credential batch upload (green theme)
+- Separate credential management tabs for each type
 
-### ⚙️ Enable Redis Mode
+## 💾 Data Storage Mode
 
-**Step 1: Configure Redis Connection**
-```bash
-# Local Redis
-export REDIS_URI="redis://localhost:6379"
+### 🌟 Storage Backend Support
 
-# Redis with password
-export REDIS_URI="redis://:password@localhost:6379"
+gcli2api supports two storage backends: **Local SQLite (Default)** and **MongoDB (Cloud Distributed Storage)**
 
-# SSL connection (recommended for production)
-export REDIS_URI="rediss://default:password@host:6380"
+### 📁 Local SQLite Storage (Default)
 
-# Upstash Redis (free cloud service)
-export REDIS_URI="rediss://default:token@your-host.upstash.io:6379"
+**Default Storage Method**
+- No configuration required, works out of the box
+- Data is stored in a local SQLite database
+- Suitable for single-machine deployment and personal use
+- Automatically creates and manages database files
 
-# Optional: Custom database index (default: 0)
-export REDIS_DATABASE="1"
-```
+### 🍃 MongoDB Cloud Storage Mode
 
-**Step 2: Start Application**
-```bash
-# Application will automatically detect Redis configuration and prioritize Redis storage
-python web.py
-```
+**Cloud Distributed Storage Solution**
 
-### 🐘 Postgres Distributed Storage Mode
-
-If Redis is not configured, or you prefer a relational database, gcli2api also supports Postgres (it is checked after Redis and before MongoDB).
-
-⚙️ Enable Postgres Mode
-
-Step 1: Configure Postgres DSN
-```bash
-# Example DSN:
-export POSTGRES_DSN="postgresql://user:password@localhost:5432/gcli2api"
-```
-
-Step 2: Start Application
-```bash
-# Application will detect POSTGRES_DSN and use Postgres when Redis is not available
-python web.py
-```
-
-### 🍃 MongoDB Distributed Storage Mode
-
-### 🌟 Alternative Storage Solution
-
-If Redis is not configured, gcli2api will attempt to use **MongoDB storage mode**.
+When multi-instance deployment or cloud storage is needed, MongoDB storage mode can be enabled.
 
 ### ⚙️ Enable MongoDB Mode
 
@@ -428,43 +429,6 @@ volumes:
   mongodb_data:
 ```
 
-### 🛠️ Troubleshooting
-
-**Common Issue Solutions**
-
-```bash
-# Check MongoDB connection
-python mongodb_setup.py check
-
-# View detailed status information
-python mongodb_setup.py status
-
-# Verify data migration results
-python -c "
-import asyncio
-from src.storage_adapter import get_storage_adapter
-
-async def test():
-    storage = await get_storage_adapter()
-    info = await storage.get_backend_info()
-    print(f'Current mode: {info[\"backend_type\"]}')
-    if info['backend_type'] == 'mongodb':
-        print(f'Database: {info.get(\"database_name\", \"Unknown\")}')
-
-asyncio.run(test())
-"
-```
-
-**Migration Failure Handling**
-```bash
-# If migration is interrupted, re-run
-python mongodb_setup.py migrate
-
-# To rollback to file mode, remove MONGODB_URI environment variable
-unset MONGODB_URI
-# Then export data from MongoDB
-python mongodb_setup.py export
-```
 
 ### 🔧 Advanced Configuration
 
@@ -480,62 +444,6 @@ export MONGODB_URI="mongodb://host1:27017,host2:27017,host3:27017/gcli2api?repli
 export MONGODB_URI="mongodb://localhost:27017/gcli2api?readPreference=secondaryPreferred"
 ```
 
-## 🏗️ Technical Architecture
-
-### Core Module Description
-
-**Authentication and Credential Management** (`src/auth.py`, `src/credential_manager.py`)
-- OAuth 2.0 authentication flow management
-- Multi-credential file status management and rotation
-- Automatic failure detection and recovery
-- JWT token generation and validation
-
-**API Routing and Conversion** (`src/openai_router.py`, `src/gemini_router.py`, `src/openai_transfer.py`)
-- OpenAI and Gemini format bidirectional conversion
-- Multimodal input processing (text+images)
-- Thinking chain content separation and processing
-- Streaming response management
-
-**Network and Proxy** (`src/httpx_client.py`, `src/google_chat_api.py`)
-- Unified HTTP client management
-- Proxy configuration and hot update support
-- Timeout and retry strategies
-- Asynchronous request pool management
-
-**State Management** (`src/state_manager.py`, `src/usage_stats.py`)
-- Atomic state operations
-- Usage statistics and quota management
-- File locking and concurrency safety
-- Data persistence (TOML format)
-
-**Task Management** (`src/task_manager.py`)
-- Global asynchronous task lifecycle management
-- Resource cleanup and memory management
-- Graceful shutdown and exception handling
-
-**Web Console** (`src/web_routes.py`)
-- RESTful API endpoints
-- WebSocket real-time communication
-- Mobile device adaptation detection
-- Batch operation support
-
-### Advanced Feature Implementation
-
-**Streaming Anti-truncation Mechanism** (`src/anti_truncation.py`)
-- Response truncation pattern detection
-- Automatic retry and state recovery
-- Context connection management
-
-**Format Detection and Conversion** (`src/format_detector.py`)
-- Automatic request format detection (OpenAI vs Gemini)
-- Seamless format conversion
-- Parameter mapping and validation
-
-**User Agent Simulation** (`src/utils.py`)
-- GeminiCLI format user agent generation
-- Platform detection and client metadata
-- API compatibility guarantee
-
 ### Environment Variable Configuration
 
 **Basic Configuration**
@@ -544,11 +452,10 @@ export MONGODB_URI="mongodb://localhost:27017/gcli2api?readPreference=secondaryP
 
 **Password Configuration**
 - `API_PASSWORD`: Chat API access password (default: inherits PASSWORD or pwd)
-- `PANEL_PASSWORD`: Control panel access password (default: inherits PASSWORD or pwd)  
+- `PANEL_PASSWORD`: Control panel access password (default: inherits PASSWORD or pwd)
 - `PASSWORD`: Universal password, overrides the above two when set (default: pwd)
 
 **Performance and Stability Configuration**
-- `CALLS_PER_ROTATION`: Number of calls before each credential rotation (default: 10)
 - `RETRY_429_ENABLED`: Enable 429 error automatic retry (default: true)
 - `RETRY_429_MAX_RETRIES`: Maximum retry attempts for 429 errors (default: 3)
 - `RETRY_429_INTERVAL`: Retry interval for 429 errors, in seconds (default: 1.0)
@@ -569,59 +476,31 @@ export MONGODB_URI="mongodb://localhost:27017/gcli2api?readPreference=secondaryP
 
 **Logging Configuration**
 - `LOG_LEVEL`: Log level (DEBUG/INFO/WARNING/ERROR, default: INFO)
-- `LOG_FILE`: Log file path (default: gcli2api.log)
+- `LOG_FILE`: Log file path (default: log.txt)
 
-**Storage Configuration (by priority)**
+**Storage Configuration**
 
-**Redis Configuration (Highest Priority)**
-- `REDIS_URI`: Redis connection string (enables Redis mode when set)
-  - Local: `redis://localhost:6379`
-  - With password: `redis://:password@host:6379`
-  - SSL: `rediss://default:password@host:6380`
-- `REDIS_DATABASE`: Redis database index (0-15, default: 0)
+**SQLite Configuration (Default)**
+- No configuration required, automatically uses local SQLite database
+- Database files are automatically created in the project directory
 
-**MongoDB Configuration (Second Priority)**
+**MongoDB Configuration (Optional Cloud Storage)**
 - `MONGODB_URI`: MongoDB connection string (enables MongoDB mode when set)
 - `MONGODB_DATABASE`: MongoDB database name (default: gcli2api)
-
-**Credential Configuration**
-
-Support importing multiple credentials using `GCLI_CREDS_*` environment variables:
-
-#### Credential Environment Variable Usage Examples
-
-**Method 1: Numbered Format**
-```bash
-export GCLI_CREDS_1='{"client_id":"your-client-id","client_secret":"your-secret","refresh_token":"your-token","token_uri":"https://oauth2.googleapis.com/token","project_id":"your-project"}'
-export GCLI_CREDS_2='{"client_id":"...","project_id":"..."}'
-```
-
-**Method 2: Project Name Format**
-```bash
-export GCLI_CREDS_myproject='{"client_id":"...","project_id":"myproject",...}'
-export GCLI_CREDS_project2='{"client_id":"...","project_id":"project2",...}'
-```
-
-**Enable Automatic Loading**
-```bash
-export AUTO_LOAD_ENV_CREDS=true  # Automatically import environment variable credentials at program startup
-```
 
 **Docker Usage Example**
 ```bash
 # Using universal password
 docker run -d --name gcli2api \
   -e PASSWORD=mypassword \
-  -e PORT=8080 \
-  -e GOOGLE_CREDENTIALS="$(cat credential.json | base64 -w 0)" \
+  -e PORT=7861 \
   ghcr.io/su-kaka/gcli2api:latest
 
 # Using separate passwords
 docker run -d --name gcli2api \
   -e API_PASSWORD=my_api_password \
   -e PANEL_PASSWORD=my_panel_password \
-  -e PORT=8080 \
-  -e GOOGLE_CREDENTIALS="$(cat credential.json | base64 -w 0)" \
+  -e PORT=7861 \
   ghcr.io/su-kaka/gcli2api:latest
 ```
 
@@ -629,11 +508,11 @@ Note: When credential environment variables are set, the system will prioritize 
 
 ### API Usage Methods
 
-This service supports two complete sets of API endpoints:
+This service supports multiple complete sets of API endpoints:
 
-#### 1. OpenAI Compatible Endpoints
+#### 1. OpenAI Compatible Endpoints (GCLI)
 
-**Endpoint:** `/v1/chat/completions`  
+**Endpoint:** `/v1/chat/completions`
 **Authentication:** `Authorization: Bearer your_api_password`
 
 Supports two request formats with automatic detection and processing:
@@ -665,15 +544,15 @@ Supports two request formats with automatic detection and processing:
 }
 ```
 
-#### 2. Gemini Native Endpoints
+#### 2. Gemini Native Endpoints (GCLI)
 
-**Non-streaming Endpoint:** `/v1/models/{model}:generateContent`  
-**Streaming Endpoint:** `/v1/models/{model}:streamGenerateContent`  
+**Non-streaming Endpoint:** `/v1/models/{model}:generateContent`
+**Streaming Endpoint:** `/v1/models/{model}:streamGenerateContent`
 **Model List:** `/v1/models`
 
 **Authentication Methods (choose one):**
 - `Authorization: Bearer your_api_password`
-- `x-goog-api-key: your_api_password`  
+- `x-goog-api-key: your_api_password`
 - URL parameter: `?key=your_api_password`
 
 **Request Examples:**
@@ -698,10 +577,43 @@ curl -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-pro:streamGenerateConte
   }'
 ```
 
+#### 3. Claude API Format Endpoints
+
+**Endpoint:** `/v1/messages`
+**Authentication:** `x-api-key: your_api_password` or `Authorization: Bearer your_api_password`
+
+**Request Example:**
+```bash
+curl -X POST "http://127.0.0.1:7861/v1/messages" \
+  -H "x-api-key: your_api_password" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-pro",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello, Claude!"}
+    ]
+  }'
+```
+
+**Support for system parameter:**
+```json
+{
+  "model": "gemini-2.5-pro",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}
+```
+
 **Notes:**
-- OpenAI endpoints return OpenAI-compatible format
-- Gemini endpoints return Gemini native format
-- Both endpoints use the same API password
+- Fully compatible with Claude API format specification
+- Automatically converts to Gemini format for backend calls
+- Supports all Claude standard parameters
+- Response format follows Claude API specification
 
 ## 📋 Complete API Reference
 
@@ -709,39 +621,36 @@ curl -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-pro:streamGenerateConte
 
 **Authentication Endpoints**
 - `POST /auth/login` - User login
-- `POST /auth/start` - Start OAuth authentication
+- `POST /auth/start` - Start OAuth authentication (supports GCLI and Antigravity modes)
 - `POST /auth/callback` - Handle OAuth callback
+- `POST /auth/callback-url` - Complete authentication directly from callback URL
 - `GET /auth/status/{project_id}` - Check authentication status
 
-**Credential Management Endpoints**
-- `GET /creds/status` - Get all credential statuses
+**Credential Management Endpoints** (supports `mode=geminicli` or `mode=antigravity` parameter)
+- `POST /creds/upload` - Batch upload credential files (supports JSON and ZIP)
+- `GET /creds/status` - Get credential status list (supports pagination and filtering)
+- `GET /creds/detail/{filename}` - Get single credential details
 - `POST /creds/action` - Single credential operation (enable/disable/delete)
 - `POST /creds/batch-action` - Batch credential operations
-- `POST /auth/upload` - Batch upload credential files (supports ZIP)
-- `GET /creds/download/{filename}` - Download credential file
+- `GET /creds/download/{filename}` - Download single credential file
 - `GET /creds/download-all` - Package download all credentials
 - `POST /creds/fetch-email/{filename}` - Get user email
 - `POST /creds/refresh-all-emails` - Batch refresh user emails
+- `POST /creds/deduplicate-by-email` - Deduplicate credentials by email
+- `POST /creds/verify-project/{filename}` - Verify credential Project ID
+- `GET /creds/quota/{filename}` - Get credential quota information (Antigravity only)
 
 **Configuration Management Endpoints**
 - `GET /config/get` - Get current configuration
 - `POST /config/save` - Save configuration
 
-**Environment Variable Credential Endpoints**
-- `POST /auth/load-env-creds` - Load environment variable credentials
-- `DELETE /auth/env-creds` - Clear environment variable credentials
-- `GET /auth/env-creds-status` - Get environment variable credential status
-
 **Log Management Endpoints**
-- `POST /auth/logs/clear` - Clear logs
-- `GET /auth/logs/download` - Download log file
-- `WebSocket /auth/logs/stream` - Real-time log stream
+- `POST /logs/clear` - Clear logs
+- `GET /logs/download` - Download log file
+- `WebSocket /logs/stream` - Real-time log stream
 
-**Usage Statistics Endpoints**
-- `GET /usage/stats` - Get usage statistics
-- `GET /usage/aggregated` - Get aggregated statistics
-- `POST /usage/update-limits` - Update usage limits
-- `POST /usage/reset` - Reset usage statistics
+**Version Information Endpoints**
+- `GET /version/info` - Get version information (optional `check_update=true` parameter to check for updates)
 
 ### Chat API Features
 
@@ -769,7 +678,7 @@ curl -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-pro:streamGenerateConte
 **Thinking Mode Support**
 ```json
 {
-  "model": "gemini-2.5-pro-maxthinking",
+  "model": "gemini-2.5-pro-high",
   "messages": [
     {"role": "user", "content": "Complex math problem"}
   ]
@@ -809,11 +718,13 @@ In this mode, all `system` messages are converted to `user` messages, improving 
 
 ---
 
-## Support the Project
+## 💬 Community
 
-If this project has been helpful to you, we welcome your support for the project's continued development!
+Welcome to join the QQ group for discussion!
 
-For detailed donation information, please see: [📖 Donation Documentation](DONATE.md)
+**QQ Group: 1083250744**
+
+<img src="qq群.jpg" width="200" alt="QQ Group QR Code">
 
 ---
 
@@ -825,3 +736,22 @@ This project is for learning and research purposes only. Using this project indi
 - Comply with relevant terms of service and legal regulations
 
 The project authors are not responsible for any direct or indirect losses arising from the use of this project.
+
+## ⚠️ License Declaration
+
+**This project is licensed under the Cooperative Non-Commercial License (CNC-1.0)**
+
+This is a strict anti-commercial open source license. Please refer to the [LICENSE](../LICENSE) file for details.
+
+### ✅ Permitted Uses:
+- Personal learning, research, and educational purposes
+- Non-profit organization use
+- Open source project integration (must comply with the same license)
+- Academic research and publication
+
+### ❌ Prohibited Uses:
+- Any form of commercial use
+- Enterprise use with annual revenue exceeding $1 million
+- Venture capital-backed or publicly traded companies
+- Providing paid services or products
+- Commercial competitive use

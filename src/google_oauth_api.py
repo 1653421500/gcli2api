@@ -2,10 +2,10 @@
 Google OAuth2 认证模块
 """
 
-import asyncio
 import time
+import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import jwt
@@ -18,7 +18,7 @@ from config import (
 )
 from log import log
 
-from .httpx_client import get_async, post_async
+from src.httpx_client import get_async, post_async
 
 
 class TokenError(Exception):
@@ -70,8 +70,8 @@ class Credentials:
         await self.refresh()
         return True
 
-    async def refresh(self, max_retries: int = 3, base_delay: float = 1.0):
-        """刷新访问令牌，支持重试机制"""
+    async def refresh(self):
+        """刷新访问令牌"""
         if not self.refresh_token:
             raise TokenError("无刷新令牌")
 
@@ -82,78 +82,47 @@ class Credentials:
             "grant_type": "refresh_token",
         }
 
-        last_exception = None
-        for attempt in range(max_retries + 1):
-            try:
-                oauth_base_url = await get_oauth_proxy_url()
-                token_url = f"{oauth_base_url.rstrip('/')}/token"
-                response = await post_async(
-                    token_url,
-                    data=data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+        try:
+            oauth_base_url = await get_oauth_proxy_url()
+            token_url = f"{oauth_base_url.rstrip('/')}/token"
+            response = await post_async(
+                token_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            response.raise_for_status()
+
+            token_data = response.json()
+            self.access_token = token_data["access_token"]
+
+            if "expires_in" in token_data:
+                expires_in = int(token_data["expires_in"])
+                current_utc = datetime.now(timezone.utc)
+                self.expires_at = current_utc + timedelta(seconds=expires_in)
+                log.debug(
+                    f"Token刷新: 当前UTC时间={current_utc.isoformat()}, "
+                    f"有效期={expires_in}秒, "
+                    f"过期时间={self.expires_at.isoformat()}"
                 )
-                response.raise_for_status()
 
-                token_data = response.json()
-                self.access_token = token_data["access_token"]
+            if "refresh_token" in token_data:
+                self.refresh_token = token_data["refresh_token"]
 
-                if "expires_in" in token_data:
-                    expires_in = int(token_data["expires_in"])
-                    self.expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            log.debug(f"Token刷新成功，过期时间: {self.expires_at}")
 
-                if "refresh_token" in token_data:
-                    self.refresh_token = token_data["refresh_token"]
+        except Exception as e:
+            error_msg = str(e)
+            status_code = None
+            if hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                status_code = e.response.status_code
+                error_msg = f"Token刷新失败 (HTTP {status_code}): {error_msg}"
+            else:
+                error_msg = f"Token刷新失败: {error_msg}"
 
-                if attempt > 0:
-                    log.debug(
-                        f"Token刷新成功（第{attempt + 1}次尝试），过期时间: {self.expires_at}"
-                    )
-                else:
-                    log.debug(f"Token刷新成功，过期时间: {self.expires_at}")
-                return
-
-            except Exception as e:
-                last_exception = e
-                error_msg = str(e)
-
-                # 检查是否是不可恢复的错误，如果是则不重试
-                if self._is_non_retryable_error(error_msg):
-                    log.error(f"Token刷新遇到不可恢复错误: {error_msg}")
-                    break
-
-                if attempt < max_retries:
-                    # 计算退避延迟时间（指数退避）
-                    delay = base_delay * (2**attempt)
-                    log.warning(
-                        f"Token刷新失败（第{attempt + 1}次尝试）: {error_msg}，{delay}秒后重试..."
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    break
-
-        # 所有重试都失败了
-        error_msg = f"Token刷新失败（已重试{max_retries}次）: {str(last_exception)}"
-        log.error(error_msg)
-        raise TokenError(error_msg)
-
-    def _is_non_retryable_error(self, error_msg: str) -> bool:
-        """判断是否是不需要重试的错误"""
-        non_retryable_patterns = [
-            "400 Bad Request",
-            "invalid_grant",
-            "refresh_token_expired",
-            "invalid_refresh_token",
-            "unauthorized_client",
-            "access_denied",
-            "401 Unauthorized",
-        ]
-
-        error_msg_lower = error_msg.lower()
-        for pattern in non_retryable_patterns:
-            if pattern.lower() in error_msg_lower:
-                return True
-
-        return False
+            log.error(error_msg)
+            token_error = TokenError(error_msg)
+            token_error.status_code = status_code
+            raise token_error
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Credentials":
@@ -546,6 +515,7 @@ async def select_default_project(projects: List[Dict[str, Any]]) -> Optional[str
     # 策略1：查找显示名称或项目ID包含"default"的项目
     for project in projects:
         display_name = project.get("displayName", "").lower()
+        # Google API returns projectId in camelCase
         project_id = project.get("projectId", "")
         if "default" in display_name or "default" in project_id.lower():
             log.info(f"选择默认项目: {project_id} ({project.get('displayName', project_id)})")
@@ -553,8 +523,330 @@ async def select_default_project(projects: List[Dict[str, Any]]) -> Optional[str
 
     # 策略2：选择第一个项目
     first_project = projects[0]
+    # Google API returns projectId in camelCase
     project_id = first_project.get("projectId", "")
     log.info(
         f"选择第一个项目作为默认: {project_id} ({first_project.get('displayName', project_id)})"
     )
     return project_id
+
+
+async def fetch_project_id_and_tier(
+    access_token: str,
+    user_agent: str,
+    api_base_url: str,
+    include_credits: bool = False,
+) -> Tuple[Optional[str], Optional[str]] | Tuple[Optional[str], Optional[str], Optional[int]]:
+    """
+    从 API 获取 project_id 和订阅等级
+
+    Args:
+        access_token: Google OAuth access token
+        user_agent: User-Agent header
+        api_base_url: API base URL (e.g., antigravity or code assist endpoint)
+
+    Returns:
+        默认返回 (project_id, subscription_tier)
+        当 include_credits=True 时返回 (project_id, subscription_tier, credit_amount)
+        subscription_tier 可能是 "FREE", "PRO", "ULTRA" 或 None
+        credit_amount 为积分数量（整数）或 None
+    """
+    headers = {
+        'User-Agent': user_agent,
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'Accept-Encoding': 'gzip'
+    }
+
+    def _map_raw_tier(raw_tier: Optional[str]) -> Optional[str]:
+        """将 loadCodeAssist 返回的 raw tier 映射为统一 tier。"""
+        if not raw_tier:
+            return None
+
+        tier_mapping = {
+            "g1-ultra-tier": "ultra",
+            "ws-ai-ultra-business-tier": "ultra",
+            "g1-pro-tier": "pro",
+            "helium-tier": "pro",
+            "standard-tier": "pro",
+            "free-tier": "free",
+        }
+
+        return tier_mapping.get(raw_tier.lower(), "pro")
+
+    subscription_tier = None
+    credit_amount: Optional[int] = None
+
+    # 步骤 1: 尝试 loadCodeAssist
+    try:
+        project_id, raw_tier, raw_credit_amount = await _try_load_code_assist(api_base_url, headers)
+        subscription_tier = _map_raw_tier(raw_tier)
+
+        if raw_credit_amount is not None:
+            try:
+                credit_amount = int(raw_credit_amount)
+                log.info(
+                    f"[fetch_project_id_and_tier] Found credit_amount: {credit_amount}"
+                )
+            except (TypeError, ValueError):
+                log.warning(
+                    f"[fetch_project_id_and_tier] Invalid credit_amount: {raw_credit_amount}"
+                )
+
+        if raw_tier:
+            log.info(
+                f"[fetch_project_id_and_tier] Raw tier '{raw_tier}' mapped to '{subscription_tier}'"
+            )
+
+        if project_id:
+            if include_credits:
+                return project_id, subscription_tier, credit_amount
+            return project_id, subscription_tier
+
+        log.warning("[fetch_project_id_and_tier] loadCodeAssist did not return project_id, falling back to onboardUser")
+
+    except Exception as e:
+        log.warning(f"[fetch_project_id_and_tier] loadCodeAssist failed: {type(e).__name__}: {e}")
+        log.warning("[fetch_project_id_and_tier] Falling back to onboardUser")
+
+    # 步骤 2: 回退到 onboardUser
+    try:
+        project_id = await _try_onboard_user(api_base_url, headers)
+        if project_id:
+            if include_credits:
+                return project_id, subscription_tier, credit_amount
+            return project_id, subscription_tier
+
+        log.error("[fetch_project_id_and_tier] Failed to get project_id from both loadCodeAssist and onboardUser")
+        if include_credits:
+            return None, subscription_tier, credit_amount
+        return None, subscription_tier
+
+    except Exception as e:
+        log.error(f"[fetch_project_id_and_tier] onboardUser failed: {type(e).__name__}: {e}")
+        import traceback
+        log.debug(f"[fetch_project_id_and_tier] Traceback: {traceback.format_exc()}")
+        if include_credits:
+            return None, subscription_tier, credit_amount
+        return None, subscription_tier
+
+
+async def _try_load_code_assist(
+    api_base_url: str,
+    headers: dict
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    尝试通过 loadCodeAssist 获取 project_id 和订阅等级
+
+    Returns:
+        (project_id, subscription_tier, credit_amount) 元组
+        subscription_tier 可能是 "FREE", "PRO", "ULTRA" 或 None
+        credit_amount 为字符串格式积分或 None
+    """
+    request_url = f"{api_base_url.rstrip('/')}/v1internal:loadCodeAssist"
+    request_body = {
+        "metadata": {
+            "ideType": "ANTIGRAVITY"
+        }
+    }
+
+    log.debug(f"[loadCodeAssist] Fetching project_id from: {request_url}")
+    log.debug(f"[loadCodeAssist] Request body: {request_body}")
+
+    response = await post_async(
+        request_url,
+        json=request_body,
+        headers=headers,
+        timeout=30.0,
+    )
+
+    log.debug(f"[loadCodeAssist] Response status: {response.status_code}")
+
+    if response.status_code == 200:
+        response_text = response.text
+        log.debug(f"[loadCodeAssist] Response body: {response_text}")
+
+        data = response.json()
+        log.debug(f"[loadCodeAssist] Response JSON keys: {list(data.keys())}")
+
+        # 提取订阅等级 - 优先使用 paidTier（更准确反映实际权益）
+        paid_tier = data.get("paidTier", {})
+        current_tier = data.get("currentTier", {})
+        available_credits = paid_tier.get("availableCredits", []) if isinstance(paid_tier, dict) else []
+
+        # paidTier.id 优先，然后是 currentTier.id
+        subscription_tier = None
+        if isinstance(paid_tier, dict) and paid_tier.get("id"):
+            subscription_tier = paid_tier.get("id")
+            log.info(f"[loadCodeAssist] Found paidTier: {subscription_tier}")
+        elif isinstance(current_tier, dict) and current_tier.get("id"):
+            subscription_tier = current_tier.get("id")
+            log.info(f"[loadCodeAssist] Found currentTier: {subscription_tier}")
+
+        # 提取积分数量（如果返回了 availableCredits）
+        credit_amount = None
+        if isinstance(available_credits, list) and available_credits:
+            first_credit = available_credits[0]
+            if isinstance(first_credit, dict):
+                credit_amount = first_credit.get("creditAmount")
+                if credit_amount is not None:
+                    log.info(f"[loadCodeAssist] Found creditAmount: {credit_amount}")
+
+        # 检查是否有 currentTier（表示用户已激活）
+        if current_tier:
+            log.info("[loadCodeAssist] User is already activated")
+
+            # 使用服务器返回的 project_id
+            project_id = data.get("cloudaicompanionProject")
+            if project_id:
+                log.info(f"[loadCodeAssist] Successfully fetched project_id: {project_id}, tier: {subscription_tier}")
+                return project_id, subscription_tier, credit_amount
+
+            log.warning("[loadCodeAssist] No project_id in response")
+            return None, subscription_tier, credit_amount
+        else:
+            log.info("[loadCodeAssist] User not activated yet (no currentTier)")
+            return None, None, credit_amount
+    else:
+        log.warning(f"[loadCodeAssist] Failed: HTTP {response.status_code}")
+        log.warning(f"[loadCodeAssist] Response body: {response.text[:500]}")
+        raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+
+
+async def _try_onboard_user(
+    api_base_url: str,
+    headers: dict
+) -> Optional[str]:
+    """
+    尝试通过 onboardUser 获取 project_id（长时间运行操作，需要轮询）
+
+    Returns:
+        project_id 或 None
+    """
+    request_url = f"{api_base_url.rstrip('/')}/v1internal:onboardUser"
+
+    # 首先需要获取用户的 tier 信息
+    tier_id = await _get_onboard_tier(api_base_url, headers)
+    if not tier_id:
+        log.error("[onboardUser] Failed to determine user tier")
+        return None
+
+    log.info(f"[onboardUser] User tier: {tier_id}")
+
+    # 构造 onboardUser 请求
+    # 注意：FREE tier 不应该包含 cloudaicompanionProject
+    request_body = {
+        "tierId": tier_id,
+        "metadata": {
+            "ideType": "ANTIGRAVITY",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI"
+        }
+    }
+
+    log.debug(f"[onboardUser] Request URL: {request_url}")
+    log.debug(f"[onboardUser] Request body: {request_body}")
+
+    # onboardUser 是长时间运行操作，需要轮询
+    # 最多等待 10 秒（5 次 * 2 秒）
+    max_attempts = 5
+    attempt = 0
+
+    while attempt < max_attempts:
+        attempt += 1
+        log.debug(f"[onboardUser] Polling attempt {attempt}/{max_attempts}")
+
+        response = await post_async(
+            request_url,
+            json=request_body,
+            headers=headers,
+            timeout=30.0,
+        )
+
+        log.debug(f"[onboardUser] Response status: {response.status_code}")
+
+        if response.status_code == 200:
+            data = response.json()
+            log.debug(f"[onboardUser] Response data: {data}")
+
+            # 检查长时间运行操作是否完成
+            if data.get("done"):
+                log.info("[onboardUser] Operation completed")
+
+                # 从响应中提取 project_id
+                response_data = data.get("response", {})
+                project_obj = response_data.get("cloudaicompanionProject", {})
+
+                if isinstance(project_obj, dict):
+                    project_id = project_obj.get("id")
+                elif isinstance(project_obj, str):
+                    project_id = project_obj
+                else:
+                    project_id = None
+
+                if project_id:
+                    log.info(f"[onboardUser] Successfully fetched project_id: {project_id}")
+                    return project_id
+                else:
+                    log.warning("[onboardUser] Operation completed but no project_id in response")
+                    return None
+            else:
+                log.debug("[onboardUser] Operation still in progress, waiting 2 seconds...")
+                await asyncio.sleep(2)
+        else:
+            log.warning(f"[onboardUser] Failed: HTTP {response.status_code}")
+            log.warning(f"[onboardUser] Response body: {response.text[:500]}")
+            raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+
+    log.error("[onboardUser] Timeout: Operation did not complete within 10 seconds")
+    return None
+
+
+async def _get_onboard_tier(
+    api_base_url: str,
+    headers: dict
+) -> Optional[str]:
+    """
+    从 loadCodeAssist 响应中获取用户应该注册的 tier
+
+    Returns:
+        tier_id (如 "FREE", "STANDARD", "LEGACY") 或 None
+    """
+    request_url = f"{api_base_url.rstrip('/')}/v1internal:loadCodeAssist"
+    request_body = {
+        "metadata": {
+            "ideType": "ANTIGRAVITY",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI"
+        }
+    }
+
+    log.debug(f"[_get_onboard_tier] Fetching tier info from: {request_url}")
+
+    response = await post_async(
+        request_url,
+        json=request_body,
+        headers=headers,
+        timeout=30.0,
+    )
+
+    if response.status_code == 200:
+        data = response.json()
+        log.debug(f"[_get_onboard_tier] Response data: {data}")
+
+        # 查找默认的 tier
+        allowed_tiers = data.get("allowedTiers", [])
+        for tier in allowed_tiers:
+            if tier.get("isDefault"):
+                tier_id = tier.get("id")
+                log.info(f"[_get_onboard_tier] Found default tier: {tier_id}")
+                return tier_id
+
+        # 如果没有默认 tier，使用 LEGACY 作为回退
+        log.warning("[_get_onboard_tier] No default tier found, using LEGACY")
+        return "LEGACY"
+    else:
+        log.error(f"[_get_onboard_tier] Failed to fetch tier info: HTTP {response.status_code}")
+        return None
+
+

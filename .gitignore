@@ -8,13 +8,13 @@
 creds/
 CLAUDE.md
 GEMINI.md
-.github
 .kiro
 # Environment configuration
 .env
 
 # Python
 uv.lock
+.python-version
 __pycache__/
 *.py[cod]
 *$py.class
@@ -95,3 +95,5 @@ log.txt
 *.tmp
 *.temp
 *.bak
+
+tools/

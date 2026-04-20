@@ -5,10 +5,10 @@ python-dotenv
 hypercorn
 aiofiles
 python-multipart
-toml
 PyJWT
 oauthlib
 motor
+pypinyin
+aiosqlite
 redis
 asyncpg
-pypinyin
